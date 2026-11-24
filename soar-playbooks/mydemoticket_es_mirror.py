@@ -62,6 +62,7 @@ def _new_mirror_events(container):
             "artifact:*.cef.actor",
             "artifact:*.cef.esFindingId",
             "artifact:*.cef.esInvestigationId",
+            "artifact:*.cef.closeNotes",
             "artifact:*.cef.source",
             "artifact:*.cef.event",
             "artifact:*.id",
@@ -70,7 +71,7 @@ def _new_mirror_events(container):
     )
     events = []
     for (label, number, state, assigned_to, comment, comment_author, comment_type, actor, es_id,
-         investigation_id, source, event, artifact_id) in rows:
+         investigation_id, close_notes, source, event, artifact_id) in rows:
         if label != EVENT_LABEL:
             continue
         if (source or "").strip().lower() == IGNORED_SOURCE:
@@ -82,6 +83,7 @@ def _new_mirror_events(container):
             "comment_type": (comment_type or "").strip(), "actor": (actor or "").strip(),
             "es_finding_id": (es_id or "").strip(),
             "es_investigation_id": (investigation_id or "").strip(),
+            "close_notes": (close_notes or "").strip(),
             "event": event, "artifact_id": artifact_id,
         })
     return events
@@ -97,6 +99,12 @@ def _note_content(e):
     kind = COMMENT_TYPE_LABELS.get(e["comment_type"], e["comment_type"])
     who = "{}/{}".format(kind, author) if kind else author
     return "MyDemoTicket {} – {}: {}".format(e["number"], who, e["comment"])
+
+
+def _close_note_content(e):
+    """'MyDemoTicket <number> geschlossen von <actor> (<state>): <close_notes>' for resolved/closed/cancelled."""
+    text = "MyDemoTicket {} geschlossen von {} ({})".format(e["number"], e["actor"] or "unknown", e["state"])
+    return "{}: {}".format(text, e["close_notes"]) if e["close_notes"] else text
 
 
 def _failure_note(container, title, content):
@@ -122,7 +130,9 @@ def route_events(action=None, success=None, container=None, results=None, handle
     without_es = [e for e in events if not e["es_investigation_id"] and not e["es_finding_id"]]
     finding_status = [e for e in with_es if _state_changed(e)]
     inv_status = [e for e in with_inv if _state_changed(e) and e["state"] in INVESTIGATION_STATUS_STATES]
-    notes = [e for e in with_inv + with_es if e["comment"]]
+    notes = [dict(e, note_content=_note_content(e)) for e in with_inv + with_es if e["comment"]]
+    notes += [dict(e, note_content=_close_note_content(e)) for e in with_inv + with_es
+              if _state_changed(e) and e["state"] in INVESTIGATION_STATUS_STATES]
     if finding_status:
         update_es_event(container=container, events=finding_status)
     if inv_status:
@@ -200,7 +210,8 @@ def add_es_note(action=None, success=None, container=None, results=None, handle=
                 filtered_artifacts=None, filtered_results=None, custom_function=None,
                 loop_state_json=None, events=None, **kwargs):
     phantom.debug("add_es_note() called")
-    parameters = [{"id": e["es_investigation_id"] or e["es_finding_id"], "content": _note_content(e),
+    parameters = [{"id": e["es_investigation_id"] or e["es_finding_id"],
+                   "content": e.get("note_content") or _note_content(e),
                    "context": {"artifact_id": e["artifact_id"]}} for e in events or []]
     if parameters:
         phantom.act("add finding or investigation note", parameters=parameters, assets=[ES_ASSET],
