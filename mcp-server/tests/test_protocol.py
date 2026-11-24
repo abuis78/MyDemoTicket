@@ -102,6 +102,10 @@ class ProtocolTests(unittest.TestCase):
                  ("create_ticket", {"short_description": "x", "priority": 5}),
                  ("set_state", {"number": "TKT1", "state": "done"}),
                  ("add_comment", {"number": "TKT1", "body": "x", "type": "email"}),
+                 ("add_comment", {"number": "TKT1", "body": "x", "author": "   "}),
+                 ("add_comment", {"number": "TKT1", "body": "x", "author": "y" * 65}),
+                 ("list_tickets", {"external_ref": "es_finding_id=1"}),
+                 ("list_tickets", {"external_ref": {"Bad": "1"}}),
                  ("update_ticket", {"number": "TKT1"})]
         for name, args in cases:
             with self.subTest(tool=name, args=args):

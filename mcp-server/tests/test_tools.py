@@ -103,6 +103,32 @@ class ToolTests(unittest.TestCase):
         default = self.ok("list_tickets", {})
         self.assertLessEqual(len(default["items"]), 20)
 
+    def test_find_by_external_ref_then_comment_with_author(self):
+        number = self.create(short_description="extref-probe")["number"]
+        self.ok("update_ticket", {"number": number, "external_refs": {"es_finding_id": 4711, "mcp_probe": "a"}})
+        other = self.create(short_description="extref-probe other")["number"]
+        self.ok("update_ticket", {"number": other, "external_refs": {"es_finding_id": "4712", "mcp_probe": "a"}})
+        found = self.ok("list_tickets", {"external_ref": {"es_finding_id": "4711"}})
+        self.assertEqual(([t["number"] for t in found["items"]], found["total"]), ([number], 1))
+        self.assertEqual(self.ok("list_tickets", {"external_ref": {"es_finding_id": 4711}})["total"], 1)
+        both = self.ok("list_tickets", {"external_ref": {"mcp_probe": "a"}, "q": "extref-probe"})
+        self.assertEqual(both["total"], 2)
+        anded = self.ok("list_tickets", {"external_ref": {"mcp_probe": "a", "es_finding_id": "4712"}})
+        self.assertEqual([t["number"] for t in anded["items"]], [other])
+        self.assertEqual(self.ok("list_tickets", {"external_ref": {"es_finding_id": "nope"}})["total"], 0)
+        self.assertIn("external_ref key", self.error("list_tickets", {"external_ref": {"Bad-Key": "x"}}))
+        self.assertIn("must be strings, numbers or booleans",
+                      self.error("list_tickets", {"external_ref": {"es_finding_id": ["x"]}}))
+
+        entry = self.ok("add_comment", {"number": number, "body": "line 1\nline 2", "author": "jdoe"})
+        self.assertEqual((entry["author"], entry["actor"]), ("jdoe", "soar"))
+        plain = self.ok("add_comment", {"number": number, "body": "no author"})
+        self.assertIsNone(plain["author"])
+        self.assertIn("longer than 64", self.error("add_comment", {"number": number, "body": "x", "author": "y" * 65}))
+        self.assertIn("HTTP 422", self.error("add_comment", {"number": number, "body": "x", "author": "a\tb"}))
+        journal = self.ok("get_journal", {"number": number})["items"]
+        self.assertEqual([e["author"] for e in journal if e["type"] == "comment"], ["jdoe", None])
+
     def test_list_custom_fields(self):
         fields = self.ok("list_custom_fields")
         names = set(f["name"] for f in fields["items"])
