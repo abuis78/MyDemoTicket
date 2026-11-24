@@ -79,10 +79,14 @@ Reopening (`resolved` → `in_progress`) clears `resolved_at`.
 ### Journal entry
 
 ```json
-{"id": 7, "type": "comment", "body": "We are looking into it", "actor": "analyst1", "source": "web", "at": "2026-11-24T14:41:00Z"}
-{"id": 8, "type": "work_note", "body": "IOC enrichment done", "actor": "soar", "source": "soar", "at": "..."}
-{"id": 9, "type": "audit", "field": "state", "old": "new", "new": "in_progress", "actor": "analyst1", "source": "web", "at": "..."}
+{"id": 7, "type": "comment", "body": "We are looking into it", "actor": "analyst1", "author": null, "source": "web", "at": "2026-11-24T14:41:00Z"}
+{"id": 8, "type": "work_note", "body": "IOC enrichment done", "actor": "soar", "author": "jdoe", "source": "soar", "at": "..."}
+{"id": 9, "type": "audit", "field": "state", "old": "new", "new": "in_progress", "actor": "analyst1", "author": null, "source": "web", "at": "..."}
 ```
+
+`actor` is always the user of the token or session. `author` is the optional real
+author an integration wrote on behalf of (see `POST /tickets/{number}/comments`),
+otherwise `null`. The web UI shows `jdoe (via soar)` when `author` is set.
 
 Audit `field` is the ticket field name, `custom_fields.<name>` / `external_refs.<key>`
 for merged objects, or `created` for the creation entry. `old`/`new` keep their JSON types.
@@ -216,6 +220,7 @@ Every non-GET request authenticated by the session cookie must send `X-CSRF-Toke
 | `priority` | 1–4 |
 | `updated_since` | ISO-8601; returns tickets with `updated_at >= value` |
 | `q` | substring search in number, short description, description |
+| `external_ref.<key>` | exact match on `external_refs.<key>`; `<key>` must match `[a-z0-9_]{1,64}` (else `422`). The stored scalar is compared as text: a stored number `1133` matches `1133`, booleans match `true`/`false`. Several `external_ref.*` parameters are combined with AND, and with all other filters. |
 | `sort` | `-updated_at` (default), `updated_at`, `number`, `-number`, `priority`, `-priority` |
 | `limit` / `offset` | paging, `limit` 1–500 (default 50) |
 
@@ -224,6 +229,28 @@ curl -s -H "Authorization: Bearer $TOKEN" \
   "$MDT/tickets?state=new,in_progress&assignment_group=SOC%20L1&updated_since=2026-11-24T00:00:00Z&limit=20"
 # {"items": [ticket, ...], "total": 3}
 ```
+
+As everywhere, only tickets of the request's tenant are returned (requesters: only their own).
+
+#### Idempotency: search first, then create
+
+A playbook that must not create a second ticket for the same ES finding looks the
+ticket up by its reference first and creates one only if `total` is `0`:
+
+```bash
+FINDING=1133
+found=$(curl -s -H "Authorization: Bearer $TOKEN" "$MDT/tickets?external_ref.es_finding_id=$FINDING&limit=1")
+if [ "$(printf '%s' "$found" | python3 -c 'import json,sys; print(json.load(sys.stdin)["total"])')" = "0" ]; then
+  curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+    -H "X-MyDemoTicket-Source: soar" \
+    -d '{"short_description": "ES finding '"$FINDING"'", "external_refs": {"es_finding_id": "'"$FINDING"'"}}' \
+    $MDT/tickets
+fi
+```
+
+The check and the create are two requests; two playbook runs at the very same
+moment can still both create a ticket. Run one playbook per finding (SOAR does this
+per container) or check again afterwards.
 
 ### `POST /tickets` → `201` ticket
 
@@ -280,6 +307,22 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 ```
 
 `type` is `comment` (default, visible to the caller) or `work_note` (internal).
+
+Optional `author`: the real person the integration writes for (e.g. the ES
+analyst). String, trimmed, 1–64 characters, no control characters (else `422`);
+`null` or missing means no author. `actor` stays the token user, so the UI shows
+`jdoe (via soar)`. The web UI itself never sends `author`.
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "X-MyDemoTicket-Source: soar" \
+  -d '{"body": "Host isolated.\nWaiting for forensics.", "author": "jdoe"}' \
+  $MDT/tickets/TKT0001001/comments
+# {"id": 12, "type": "comment", "body": "Host isolated.\nWaiting for forensics.", "actor": "soar",
+#  "author": "jdoe", "source": "soar", "at": "..."}
+```
+
+The audit event `ticket.comment` carries `details.author` (or `null`).
 
 ## Custom fields
 
@@ -432,7 +475,7 @@ Delivery: `POST <url>` with headers `X-MyDemoTicket-Event`, `X-MyDemoTicket-Deli
 }
 ```
 
-`comment` is the journal entry for `ticket.commented`, else `null`. Verify the
+`comment` is the journal entry for `ticket.commented` (including `author`), else `null`. Verify the
 signature over the exact raw body bytes, e.g. in Python:
 
 ```python
@@ -467,10 +510,11 @@ Each event results in (header `ph-auth-token`, JSON):
     "source_data_identifier": "<delivery_id>", "run_automation": true,
     "cef": {"ticketNumber": "TKT0001001", "ticketState": "resolved", "ticketPriority": 2,
             "assignmentGroup": "SOC L1", "assignedTo": "analyst1", "event": "ticket.state_changed",
-            "changes": "{\"state\": {...}}", "comment": "", "customFields": "{...}",
+            "changes": "{\"state\": {...}}", "comment": "", "commentAuthor": "", "customFields": "{...}",
             "esFindingId": "finding-placeholder", "source": "web", "tenant": "soc-games"}}
    ```
-   `changes` and `customFields` are JSON strings. `cef.source` is an addition for
+   `changes` and `customFields` are JSON strings. For `ticket.commented`,
+   `comment` is the body and `commentAuthor` the optional author (else `""`). `cef.source` is an addition for
    playbook-side loop checks, `cef.tenant` is the tenant slug of the ticket. The
    container name stays `<number>: <short description>`.
 

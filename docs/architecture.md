@@ -145,7 +145,15 @@ tenants ──< users (tenant_id; NULL only for platform_admin) ──< api_toke
   off, `PRAGMA foreign_key_check` must be clean before `COMMIT`; before upgrading
   an existing file a copy is written to `mydemoticket.sqlite3.pre-v2.bak` (0600).
   Everything existing moves to `soc-games`; user `admin` becomes `platform_admin`.
-  A second start finds `user_version = 2` and does nothing.
+  A second start finds the current `user_version` and does nothing.
+* **Migration (schema v3):** additive only – `journal.author` (TEXT, `NULL` for
+  all existing rows). Same rules: one transaction per step, and before each step a
+  copy of the previous state is written to `<db>.pre-v<N>.bak` (a v2 database gets
+  `mydemoticket.sqlite3.pre-v3.bak`; an existing backup is never overwritten).
+* **external_ref filter:** `GET /tickets?external_ref.<key>=<value>` uses SQLite
+  `json_type`/`json_extract` on `tickets.external_refs` inside the normal SQL query,
+  so paging and `total` stay exact. Without JSON1 (very old SQLite) `db.py`
+  registers Python stand-ins for both functions.
 * **Audit:** every action and every `401`/`403` is logged via `AuditLogger` with
   the tenant slug; HEC sends all tenants to one index (`MYDEMOTICKET_HEC_INDEX`,
   normally `mydemoticket`) with `tenant` as indexed field; `tenants.splunk_index`
