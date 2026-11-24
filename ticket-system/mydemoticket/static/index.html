@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MyDemoTicket</title>
+  <link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#/tickets">MyDemoTicket</a>
+    <form class="global-search" id="global-search" role="search" hidden>
+      <input type="search" id="global-search-input" placeholder="Search tickets" aria-label="Search tickets">
+    </form>
+    <div class="userbox" id="userbox" hidden>
+      <span id="user-name"></span>
+      <button type="button" class="link" id="logout">Log out</button>
+    </div>
+  </header>
+  <div class="layout">
+    <nav class="sidebar" id="sidebar" hidden>
+      <div class="nav-section">Tickets</div>
+      <a href="#/tickets" data-nav="tickets">All open</a>
+      <a href="#/tickets?mine=1" data-nav="mine">Assigned to me</a>
+      <a href="#/tickets?unassigned=1" data-nav="unassigned">Unassigned</a>
+      <a href="#/tickets?all=1" data-nav="all">All tickets</a>
+      <a href="#/new" data-nav="new">Create new</a>
+      <div class="nav-section admin-only">Administration</div>
+      <a class="admin-only" href="#/admin/users" data-nav="users">Users</a>
+      <a class="admin-only" href="#/admin/teams" data-nav="teams">Teams</a>
+      <a class="admin-only" href="#/admin/custom-fields" data-nav="custom-fields">Custom fields</a>
+      <a class="admin-only" href="#/admin/webhooks" data-nav="webhooks">Webhooks</a>
+    </nav>
+    <main id="main" class="content" tabindex="-1"></main>
+  </div>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

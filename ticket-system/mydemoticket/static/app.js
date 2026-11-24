@@ -1,0 +1,771 @@
+/* MyDemoTicket web UI - vanilla JS single page app, no dependencies.
+ * All DOM is built with createElement/textContent (never innerHTML with data). */
+(function () {
+  "use strict";
+
+  var STATES = ["new", "in_progress", "on_hold", "resolved", "closed", "cancelled"];
+  var TRANSITIONS = {
+    new: ["in_progress", "on_hold", "resolved", "cancelled"],
+    in_progress: ["on_hold", "resolved", "cancelled"],
+    on_hold: ["in_progress", "resolved", "cancelled"],
+    resolved: ["in_progress", "closed"],
+    closed: [],
+    cancelled: []
+  };
+  var STATE_LABEL = {
+    new: "New", in_progress: "In Progress", on_hold: "On Hold",
+    resolved: "Resolved", closed: "Closed", cancelled: "Cancelled"
+  };
+  var ACTION_LABEL = {
+    in_progress: "Start work", on_hold: "Put on hold", resolved: "Resolve",
+    closed: "Close", cancelled: "Cancel ticket"
+  };
+  var PRIORITIES = { 1: "1 - Critical", 2: "2 - High", 3: "3 - Moderate", 4: "4 - Low" };
+  var EVENTS = ["ticket.created", "ticket.updated", "ticket.state_changed", "ticket.commented"];
+
+  var session = { me: null, csrf: null, fields: [], teams: [], users: [] };
+  var main = document.getElementById("main");
+
+  // ---------------------------------------------------------------- helpers
+  function h(tag, attrs) {
+    var el = document.createElement(tag);
+    var children = Array.prototype.slice.call(arguments, 2);
+    Object.keys(attrs || {}).forEach(function (key) {
+      var value = attrs[key];
+      if (value === null || value === undefined || value === false) return;
+      if (key === "class") el.className = value;
+      else if (key === "text") el.textContent = value;
+      else if (key.indexOf("on") === 0) el.addEventListener(key.slice(2), value);
+      else if (key === "value") el.value = value;
+      else if (key === "checked" || key === "selected" || key === "disabled") el[key] = !!value;
+      else el.setAttribute(key, value === true ? "" : String(value));
+    });
+    children.forEach(function append(child) {
+      if (child === null || child === undefined || child === false) return;
+      if (Array.isArray(child)) { child.forEach(append); return; }
+      el.appendChild(typeof child === "string" || typeof child === "number"
+        ? document.createTextNode(String(child)) : child);
+    });
+    return el;
+  }
+
+  function clear(el) { while (el.firstChild) el.removeChild(el.firstChild); }
+
+  function render() {
+    clear(main);
+    Array.prototype.slice.call(arguments).forEach(function (c) { if (c) main.appendChild(c); });
+  }
+
+  var toastTimer = null;
+  function toast(message, isError) {
+    var el = document.getElementById("toast");
+    el.textContent = message;
+    el.className = "toast" + (isError ? " err" : "");
+    el.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { el.hidden = true; }, isError ? 6000 : 3000);
+  }
+
+  function api(method, path, body) {
+    var headers = { "Accept": "application/json" };
+    var opts = { method: method, headers: headers, credentials: "same-origin" };
+    if (body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      opts.body = JSON.stringify(body);
+    }
+    if (method !== "GET" && session.csrf) headers["X-CSRF-Token"] = session.csrf;
+    return fetch("/api/v1" + path, opts).then(function (resp) {
+      if (resp.status === 204) return null;
+      return resp.json().catch(function () { return {}; }).then(function (data) {
+        if (!resp.ok) {
+          var err = new Error((data && data.error) || ("HTTP " + resp.status));
+          err.status = resp.status;
+          throw err;
+        }
+        return data;
+      });
+    });
+  }
+
+  function fail(err) {
+    if (err && err.status === 401) { session.me = null; showLogin(); return; }
+    toast(err.message || String(err), true);
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return "";
+    var d = new Date(iso);
+    return isNaN(d) ? iso : d.toLocaleString();
+  }
+
+  function stateBadge(state) {
+    return h("span", { class: "badge state-" + state, text: STATE_LABEL[state] || state });
+  }
+
+  function field(labelText, control, opts) {
+    opts = opts || {};
+    return h("div", { class: opts.wide ? "wide" : null },
+      h("label", { class: opts.required ? "req" : null, for: control.id || null, text: labelText }),
+      control);
+  }
+
+  function select(id, options, current, includeEmpty) {
+    var sel = h("select", { id: id });
+    if (includeEmpty) sel.appendChild(h("option", { value: "" }, includeEmpty));
+    options.forEach(function (opt) {
+      var value = Array.isArray(opt) ? opt[0] : opt;
+      var label = Array.isArray(opt) ? opt[1] : opt;
+      sel.appendChild(h("option", { value: String(value), selected: String(value) === String(current) }, label));
+    });
+    return sel;
+  }
+
+  function parseHash() {
+    var raw = location.hash.replace(/^#/, "") || "/tickets";
+    var parts = raw.split("?");
+    var params = {};
+    (parts[1] || "").split("&").forEach(function (kv) {
+      if (!kv) return;
+      var p = kv.split("=");
+      params[decodeURIComponent(p[0])] = decodeURIComponent((p[1] || "").replace(/\+/g, " "));
+    });
+    return { path: parts[0], params: params };
+  }
+
+  function canModify(ticket) {
+    var me = session.me;
+    if (!me) return false;
+    if (me.role === "admin" || me.role === "integration") return true;
+    if (me.role !== "agent") return false;
+    if (!ticket.assignment_group && !ticket.assigned_to) return true;
+    if (ticket.assigned_to === me.username) return true;
+    return !!ticket.assignment_group && me.teams.indexOf(ticket.assignment_group) >= 0;
+  }
+
+  // ------------------------------------------------------------ bootstrap
+  function loadReference() {
+    var jobs = [api("GET", "/custom-fields").then(function (f) { session.fields = f; })];
+    if (session.me.role !== "requester") {
+      jobs.push(api("GET", "/teams").then(function (t) { session.teams = t; }));
+      jobs.push(api("GET", "/users").then(function (u) { session.users = u; }));
+    }
+    return Promise.all(jobs);
+  }
+
+  function setChrome(loggedIn) {
+    document.getElementById("sidebar").hidden = !loggedIn;
+    document.getElementById("userbox").hidden = !loggedIn;
+    document.getElementById("global-search").hidden = !loggedIn;
+    var isAdmin = loggedIn && session.me.role === "admin";
+    Array.prototype.forEach.call(document.querySelectorAll(".admin-only"), function (el) {
+      el.hidden = !isAdmin;
+    });
+    if (loggedIn) {
+      document.getElementById("user-name").textContent =
+        session.me.display_name + " (" + session.me.role + ")";
+    }
+  }
+
+  function start() {
+    api("GET", "/me").then(function (me) {
+      session.me = me;
+      session.csrf = me.csrf_token;
+      return loadReference().then(function () { setChrome(true); route(); });
+    }).catch(function () { showLogin(); });
+  }
+
+  function showLogin() {
+    setChrome(false);
+    var user = h("input", { id: "login-user", autocomplete: "username", required: true });
+    var pass = h("input", { id: "login-pass", type: "password", autocomplete: "current-password", required: true });
+    var error = h("div", { class: "error" });
+    var form = h("form", {
+      onsubmit: function (ev) {
+        ev.preventDefault();
+        error.textContent = "";
+        api("POST", "/auth/login", { username: user.value, password: pass.value }).then(function (me) {
+          session.me = me;
+          session.csrf = me.csrf_token;
+          return loadReference().then(function () {
+            setChrome(true);
+            if (!location.hash || location.hash === "#/login") location.hash = "#/tickets";
+            else route();
+          });
+        }).catch(function (err) { error.textContent = err.message; });
+      }
+    },
+      h("div", { class: "panel-body" },
+        field("User name", user), field("Password", pass), error,
+        h("button", { class: "primary", type: "submit" }, "Log in")));
+    render(h("div", { class: "panel login" },
+      h("div", { class: "panel-head" }, h("h1", { text: "Log in to MyDemoTicket" })), form));
+    user.focus();
+  }
+
+  document.getElementById("logout").addEventListener("click", function () {
+    api("POST", "/auth/logout", {}).catch(function () {}).then(function () {
+      session.me = null; session.csrf = null; showLogin();
+    });
+  });
+  document.getElementById("global-search").addEventListener("submit", function (ev) {
+    ev.preventDefault();
+    var q = document.getElementById("global-search-input").value.trim();
+    location.hash = "#/tickets?all=1&q=" + encodeURIComponent(q);
+  });
+
+  // ----------------------------------------------------------------- router
+  function route() {
+    if (!session.me) { showLogin(); return; }
+    var r = parseHash();
+    var nav = "tickets";
+    var m;
+    if (r.path === "/new") { nav = "new"; viewNew(); }
+    else if ((m = r.path.match(/^\/tickets\/([^/]+)$/))) { nav = ""; viewDetail(decodeURIComponent(m[1])); }
+    else if (r.path === "/admin/users") { nav = "users"; viewUsers(); }
+    else if (r.path === "/admin/teams") { nav = "teams"; viewTeams(); }
+    else if (r.path === "/admin/custom-fields") { nav = "custom-fields"; viewFields(); }
+    else if (r.path === "/admin/webhooks") { nav = "webhooks"; viewWebhooks(); }
+    else {
+      if (r.params.mine) nav = "mine";
+      else if (r.params.unassigned) nav = "unassigned";
+      else if (r.params.all) nav = "all";
+      viewList(r.params);
+    }
+    Array.prototype.forEach.call(document.querySelectorAll(".sidebar a"), function (a) {
+      a.classList.toggle("active", a.getAttribute("data-nav") === nav);
+    });
+  }
+  window.addEventListener("hashchange", route);
+
+  // ------------------------------------------------------------ ticket list
+  function viewList(params) {
+    var query = { limit: 25, offset: parseInt(params.offset || "0", 10) || 0 };
+    if (params.state) query.state = params.state;
+    else if (!params.all) query.state = "new,in_progress,on_hold";
+    if (params.q) query.q = params.q;
+    if (params.assignment_group) query.assignment_group = params.assignment_group;
+    if (params.mine) query.assigned_to = session.me.username;
+    if (params.unassigned) query.assigned_to = "";
+
+    var title = params.mine ? "Assigned to me" : params.unassigned ? "Unassigned tickets"
+      : params.all ? "All tickets" : "Open tickets";
+    var stateSel = select("f-state", STATES.map(function (s) { return [s, STATE_LABEL[s]]; }),
+      params.state || "", "Any open state");
+    var groupSel = select("f-group", session.teams.map(function (t) { return t.name; }),
+      params.assignment_group || "", "Any group");
+    var qInput = h("input", { id: "f-q", type: "search", value: params.q || "", placeholder: "Number or text" });
+    function apply(ev) {
+      if (ev) ev.preventDefault();
+      var next = {};
+      ["mine", "unassigned", "all"].forEach(function (k) { if (params[k]) next[k] = params[k]; });
+      if (stateSel.value) next.state = stateSel.value;
+      if (groupSel.value) next.assignment_group = groupSel.value;
+      if (qInput.value.trim()) next.q = qInput.value.trim();
+      location.hash = "#/tickets?" + Object.keys(next).map(function (k) {
+        return k + "=" + encodeURIComponent(next[k]);
+      }).join("&");
+    }
+    var filters = h("form", { class: "filters panel-body", onsubmit: apply },
+      field("State", stateSel),
+      session.me.role !== "requester" ? field("Assignment group", groupSel) : null,
+      field("Search", qInput),
+      h("div", null, h("button", { class: "primary", type: "submit" }, "Apply")));
+
+    var tbody = h("tbody", null, h("tr", null, h("td", { colspan: 7, class: "muted", text: "Loading..." })));
+    var pager = h("div", { class: "pager" });
+    render(h("div", { class: "panel" },
+      h("div", { class: "panel-head" }, h("h1", { text: title }), h("span", { class: "spacer" }),
+        h("a", { class: "btn", href: "#/new" }, "New")),
+      filters,
+      h("table", { class: "list" },
+        h("thead", null, h("tr", null, ["Number", "Short description", "State", "Priority",
+          "Assignment group", "Assigned to", "Updated"].map(function (c) { return h("th", { text: c }); }))),
+        tbody),
+      pager));
+
+    var qs = Object.keys(query).map(function (k) { return k + "=" + encodeURIComponent(query[k]); }).join("&");
+    api("GET", "/tickets?" + qs).then(function (data) {
+      clear(tbody);
+      if (!data.items.length) {
+        tbody.appendChild(h("tr", null, h("td", { colspan: 7, class: "muted", text: "No tickets found." })));
+      }
+      data.items.forEach(function (t) {
+        tbody.appendChild(h("tr", null,
+          h("td", null, h("a", { href: "#/tickets/" + encodeURIComponent(t.number), text: t.number })),
+          h("td", { text: t.short_description }),
+          h("td", null, stateBadge(t.state)),
+          h("td", { class: "prio-" + t.priority, text: PRIORITIES[t.priority] }),
+          h("td", { text: t.assignment_group || "" }),
+          h("td", { text: t.assigned_to || "" }),
+          h("td", { text: fmtTime(t.updated_at) })));
+      });
+      var from = data.total ? query.offset + 1 : 0;
+      var to = Math.min(query.offset + query.limit, data.total);
+      pager.appendChild(h("span", { text: from + "-" + to + " of " + data.total }));
+      function page(delta) {
+        var p = Object.assign({}, params, { offset: Math.max(0, query.offset + delta) });
+        location.hash = "#/tickets?" + Object.keys(p).map(function (k) {
+          return k + "=" + encodeURIComponent(p[k]);
+        }).join("&");
+      }
+      pager.appendChild(h("button", { disabled: query.offset === 0, onclick: function () { page(-query.limit); } }, "Previous"));
+      pager.appendChild(h("button", { disabled: to >= data.total, onclick: function () { page(query.limit); } }, "Next"));
+    }).catch(fail);
+  }
+
+  // ------------------------------------------------------ custom field input
+  function customInput(def, value) {
+    var id = "cf-" + def.name;
+    if (def.type === "boolean") {
+      return select(id, [["true", "Yes"], ["false", "No"]],
+        value === true ? "true" : value === false ? "false" : "", "-");
+    }
+    if (def.type === "choice") return select(id, def.choices, value == null ? "" : value, "-");
+    var input = h("input", { id: id, value: value == null ? "" : String(value) });
+    if (def.type === "number") { input.type = "number"; input.step = "any"; }
+    if (def.type === "date") input.type = "date";
+    return input;
+  }
+
+  function readCustom(def, el) {
+    var raw = el.value;
+    if (raw === "") return null;
+    if (def.type === "number") return Number(raw);
+    if (def.type === "boolean") return raw === "true";
+    return raw;
+  }
+
+  // ----------------------------------------------------------- new ticket
+  function viewNew() {
+    var me = session.me;
+    var isRequester = me.role === "requester";
+    var short = h("input", { id: "n-short", required: true, maxlength: 500 });
+    var desc = h("textarea", { id: "n-desc" });
+    var prio = select("n-prio", Object.keys(PRIORITIES).map(function (k) { return [k, PRIORITIES[k]]; }), "3");
+    var cat = h("input", { id: "n-cat", placeholder: "e.g. security" });
+    var group = select("n-group", session.teams.map(function (t) { return t.name; }), "", "-- none --");
+    var assignee = select("n-assignee", session.users.map(function (u) { return [u.username, u.display_name]; }),
+      "", "-- none --");
+    var customEls = {};
+    var customs = session.fields.map(function (def) {
+      customEls[def.name] = customInput(def, null);
+      return field(def.label, customEls[def.name], { required: def.required });
+    });
+    var form = h("form", {
+      onsubmit: function (ev) {
+        ev.preventDefault();
+        var body = {
+          short_description: short.value, description: desc.value,
+          priority: parseInt(prio.value, 10), category: cat.value
+        };
+        if (!isRequester) {
+          body.assignment_group = group.value || null;
+          body.assigned_to = assignee.value || null;
+        }
+        var cf = {};
+        session.fields.forEach(function (def) {
+          var v = readCustom(def, customEls[def.name]);
+          if (v !== null) cf[def.name] = v;
+        });
+        body.custom_fields = cf;
+        api("POST", "/tickets", body).then(function (t) {
+          toast("Created " + t.number);
+          location.hash = "#/tickets/" + encodeURIComponent(t.number);
+        }).catch(fail);
+      }
+    },
+      h("div", { class: "panel-body form-grid" },
+        field("Short description", short, { required: true, wide: true }),
+        field("Description", desc, { wide: true }),
+        field("Priority", prio), field("Category", cat),
+        isRequester ? null : field("Assignment group", group),
+        isRequester ? null : field("Assigned to", assignee),
+        customs),
+      h("div", { class: "panel-body" }, h("button", { class: "primary", type: "submit" }, "Submit")));
+    render(h("div", { class: "panel" },
+      h("div", { class: "panel-head" }, h("h1", { text: "New ticket" })), form));
+    short.focus();
+  }
+
+  // --------------------------------------------------------- ticket detail
+  function viewDetail(number) {
+    render(h("p", { class: "muted", text: "Loading " + number + "..." }));
+    Promise.all([
+      api("GET", "/tickets/" + encodeURIComponent(number)),
+      api("GET", "/tickets/" + encodeURIComponent(number) + "/journal")
+    ]).then(function (res) { drawDetail(res[0], res[1]); }).catch(fail);
+  }
+
+  function drawDetail(t, journal) {
+    var me = session.me;
+    var isRequester = me.role === "requester";
+    var editable = !isRequester && canModify(t);
+    var path = "/tickets/" + encodeURIComponent(t.number);
+
+    function ro(el) { if (!editable) el.disabled = true; return el; }
+    var short = ro(h("input", { id: "d-short", value: t.short_description }));
+    var desc = ro(h("textarea", { id: "d-desc", value: t.description }));
+    var prio = ro(select("d-prio", Object.keys(PRIORITIES).map(function (k) { return [k, PRIORITIES[k]]; }), t.priority));
+    var cat = ro(h("input", { id: "d-cat", value: t.category }));
+    var groupNames = session.teams.map(function (x) { return x.name; });
+    if (t.assignment_group && groupNames.indexOf(t.assignment_group) < 0) groupNames.push(t.assignment_group);
+    var group = ro(select("d-group", groupNames, t.assignment_group || "", "-- none --"));
+    var userOpts = session.users.map(function (u) { return [u.username, u.display_name]; });
+    if (t.assigned_to && !session.users.some(function (u) { return u.username === t.assigned_to; })) {
+      userOpts.push([t.assigned_to, t.assigned_to]);
+    }
+    var assignee = ro(select("d-assignee", userOpts, t.assigned_to || "", "-- none --"));
+    var closeNotes = ro(h("textarea", { id: "d-close", value: t.close_notes }));
+    var customEls = {};
+    var customs = session.fields.map(function (def) {
+      customEls[def.name] = ro(customInput(def, t.custom_fields[def.name]));
+      return field(def.label, customEls[def.name], { required: def.required });
+    });
+
+    function collectChanges() {
+      var body = {};
+      if (short.value !== t.short_description) body.short_description = short.value;
+      if (desc.value !== t.description) body.description = desc.value;
+      if (parseInt(prio.value, 10) !== t.priority) body.priority = parseInt(prio.value, 10);
+      if (cat.value !== t.category) body.category = cat.value;
+      if ((group.value || null) !== t.assignment_group) body.assignment_group = group.value || null;
+      if ((assignee.value || null) !== t.assigned_to) body.assigned_to = assignee.value || null;
+      if (closeNotes.value !== t.close_notes) body.close_notes = closeNotes.value;
+      var cf = {};
+      session.fields.forEach(function (def) {
+        var v = readCustom(def, customEls[def.name]);
+        var old = t.custom_fields[def.name];
+        if (v !== (old === undefined ? null : old)) cf[def.name] = v;
+      });
+      if (Object.keys(cf).length) body.custom_fields = cf;
+      return body;
+    }
+
+    function patch(body, message) {
+      api("PATCH", path, body).then(function () {
+        toast(message);
+        viewDetail(t.number);
+      }).catch(fail);
+    }
+
+    var actions = h("div", { class: "actions" });
+    (TRANSITIONS[t.state] || []).forEach(function (target) {
+      var allowed = editable || (isRequester && target === "cancelled" && t.caller === me.username);
+      if (!allowed) return;
+      actions.appendChild(h("button", {
+        class: target === "resolved" ? "primary" : target === "cancelled" ? "danger" : null,
+        onclick: function () {
+          var body = isRequester ? {} : collectChanges();
+          body.state = target;
+          if (target === "resolved" && !closeNotes.value.trim()) {
+            toast("Please enter close notes before resolving.", true);
+            closeNotes.focus();
+            return;
+          }
+          patch(body, "State changed to " + STATE_LABEL[target]);
+        }
+      }, ACTION_LABEL[target]));
+    });
+    if (editable) {
+      actions.appendChild(h("button", {
+        class: "primary", onclick: function () {
+          var body = collectChanges();
+          if (!Object.keys(body).length) { toast("Nothing changed."); return; }
+          patch(body, "Saved");
+        }
+      }, "Save"));
+    }
+
+    var refs = Object.keys(t.external_refs || {});
+    var header = h("div", { class: "panel-head" },
+      h("h1", null, t.number + " "), stateBadge(t.state), h("span", { class: "spacer" }), actions);
+
+    var formBody = h("div", { class: "panel-body form-grid" },
+      field("Number", h("input", { id: "d-number", value: t.number, disabled: true })),
+      field("Caller", h("input", { id: "d-caller", value: t.caller, disabled: true })),
+      field("Short description", short, { required: true, wide: true }),
+      field("Description", desc, { wide: true }),
+      field("Priority", prio), field("Category", cat),
+      field("Assignment group", group), field("Assigned to", assignee),
+      customs,
+      field("Close notes", closeNotes, { wide: true }),
+      h("div", { class: "wide muted" },
+        "Created " + fmtTime(t.created_at) + " - Updated " + fmtTime(t.updated_at) +
+        (t.resolved_at ? " - Resolved " + fmtTime(t.resolved_at) : "")),
+      refs.length ? h("div", { class: "wide" }, h("label", { text: "External references" }),
+        h("div", { class: "mono" }, refs.map(function (k) { return k + ": " + t.external_refs[k]; }).join("  |  ")))
+        : null);
+
+    render(h("div", { class: "panel" }, header, formBody), drawJournal(t, journal, editable));
+  }
+
+  function drawJournal(t, journal, editable) {
+    var me = session.me;
+    var isRequester = me.role === "requester";
+    var canComment = isRequester ? t.caller === me.username : editable;
+    var kind = isRequester ? "comment" : "work_note";
+    var text = h("textarea", { id: "j-body", placeholder: "Add a work note (internal)" });
+    var tabs = h("div", { class: "tabs" });
+    function setKind(k) {
+      kind = k;
+      text.placeholder = k === "work_note" ? "Add a work note (internal)" : "Add a comment (visible to caller)";
+      Array.prototype.forEach.call(tabs.children, function (b) {
+        b.classList.toggle("active", b.getAttribute("data-kind") === k);
+      });
+    }
+    if (!isRequester) {
+      tabs.appendChild(h("button", { type: "button", "data-kind": "work_note", onclick: function () { setKind("work_note"); } }, "Work note"));
+    }
+    tabs.appendChild(h("button", { type: "button", "data-kind": "comment", onclick: function () { setKind("comment"); } }, "Comment"));
+    setKind(kind);
+
+    var form = canComment ? h("form", {
+      class: "panel-body",
+      onsubmit: function (ev) {
+        ev.preventDefault();
+        if (!text.value.trim()) return;
+        api("POST", "/tickets/" + encodeURIComponent(t.number) + "/comments", { body: text.value, type: kind })
+          .then(function () { toast("Posted"); viewDetail(t.number); }).catch(fail);
+      }
+    }, tabs, text, h("div", null, h("button", { class: "primary", type: "submit" }, "Post"))) : null;
+
+    var list = h("ul", { class: "journal" });
+    journal.slice().reverse().forEach(function (e) {
+      var label = e.type === "work_note" ? "Work note" : e.type === "comment" ? "Comment" : "Field change";
+      var meta = h("div", { class: "meta" }, label + " - " + e.actor + " - " + fmtTime(e.at) +
+        (e.source ? " - via " + e.source : ""));
+      var body;
+      if (e.type === "audit") {
+        body = h("div", { class: "body" }, e.field === "created" ? "Ticket created"
+          : e.field + ": " + fmtValue(e.old) + " → " + fmtValue(e.new));
+      } else {
+        body = h("div", { class: "body", text: e.body });
+      }
+      list.appendChild(h("li", { class: e.type }, meta, body));
+    });
+    return h("div", { class: "panel" },
+      h("div", { class: "panel-head" }, h("h2", { text: "Activity" })), form,
+      h("div", { class: "panel-body" }, list));
+  }
+
+  function fmtValue(v) {
+    if (v === null || v === undefined || v === "") return "(empty)";
+    if (typeof v === "object") return JSON.stringify(v);
+    return String(v);
+  }
+
+  // ----------------------------------------------------------------- admin
+  function adminPanel(title, formEl, tableEl, extra) {
+    return h("div", null,
+      h("div", { class: "panel" }, h("div", { class: "panel-head" }, h("h1", { text: title })), tableEl),
+      formEl ? h("div", { class: "panel" }, h("div", { class: "panel-head" }, h("h2", { text: "Add" })), formEl) : null,
+      extra || null);
+  }
+
+  function table(headers, rows) {
+    return h("table", { class: "list" },
+      h("thead", null, h("tr", null, headers.map(function (x) { return h("th", { text: x }); }))),
+      h("tbody", null, rows));
+  }
+
+  function refreshReference() { return loadReference().catch(function () {}); }
+
+  function viewUsers() {
+    api("GET", "/users").then(function (users) {
+      session.users = users;
+      var secretBox = h("div");
+      var rows = users.map(function (u) {
+        var role = select("role-" + u.username, ["admin", "agent", "requester", "integration"], u.role);
+        role.addEventListener("change", function () {
+          api("PATCH", "/users/" + encodeURIComponent(u.username), { role: role.value })
+            .then(function () { toast("Role updated"); }).catch(function (e) { fail(e); viewUsers(); });
+        });
+        return h("tr", null,
+          h("td", { text: u.username }), h("td", { text: u.display_name }), h("td", null, role),
+          h("td", { text: u.teams.join(", ") }), h("td", { text: u.active ? "active" : "inactive" }),
+          h("td", { class: "actions" },
+            h("button", {
+              onclick: function () {
+                api("POST", "/users/" + encodeURIComponent(u.username) + "/tokens", { name: "ui" }).then(function (tok) {
+                  clear(secretBox);
+                  secretBox.appendChild(h("div", { class: "secret-box" },
+                    h("strong", { text: "New API token for " + u.username + " (shown only once):" }),
+                    h("div", { class: "mono", text: tok.token })));
+                }).catch(fail);
+              }
+            }, "New token"),
+            h("button", {
+              onclick: function () {
+                api("PATCH", "/users/" + encodeURIComponent(u.username), { active: !u.active })
+                  .then(viewUsers).catch(fail);
+              }
+            }, u.active ? "Deactivate" : "Activate"),
+            h("button", {
+              onclick: function () {
+                var pw = window.prompt("New password for " + u.username + " (min. 8 characters)");
+                if (!pw) return;
+                api("PATCH", "/users/" + encodeURIComponent(u.username), { password: pw })
+                  .then(function () { toast("Password set"); }).catch(fail);
+              }
+            }, "Set password")));
+      });
+      var name = h("input", { id: "u-name", required: true });
+      var display = h("input", { id: "u-display" });
+      var roleSel = select("u-role", ["agent", "requester", "integration", "admin"], "agent");
+      var pw = h("input", { id: "u-pw", type: "password", autocomplete: "new-password" });
+      var teamSel = select("u-team", session.teams.map(function (t) { return t.name; }), "", "-- none --");
+      var form = h("form", {
+        class: "panel-body form-grid", onsubmit: function (ev) {
+          ev.preventDefault();
+          var body = { username: name.value, display_name: display.value, role: roleSel.value };
+          if (pw.value) body.password = pw.value;
+          if (teamSel.value) body.teams = [teamSel.value];
+          api("POST", "/users", body).then(function () { toast("User created"); refreshReference().then(viewUsers); })
+            .catch(fail);
+        }
+      }, field("User name", name, { required: true }), field("Display name", display), field("Role", roleSel),
+        field("Password (optional)", pw), field("Team", teamSel),
+        h("div", { class: "wide" }, h("button", { class: "primary", type: "submit" }, "Create user")));
+      render(adminPanel("Users",
+        form, h("div", null, secretBox,
+          table(["User name", "Display name", "Role", "Teams", "Status", ""], rows))));
+    }).catch(fail);
+  }
+
+  function viewTeams() {
+    api("GET", "/teams").then(function (teams) {
+      session.teams = teams;
+      var rows = teams.map(function (t) {
+        var add = select("add-" + t.name, session.users.map(function (u) { return u.username; }), "", "add member...");
+        add.addEventListener("change", function () {
+          if (!add.value) return;
+          api("POST", "/teams/" + encodeURIComponent(t.name) + "/members", { username: add.value })
+            .then(function () { refreshReference().then(viewTeams); }).catch(fail);
+        });
+        return h("tr", null, h("td", { text: t.name }), h("td", { text: t.description }),
+          h("td", null, t.members.map(function (m) {
+            return h("span", { class: "badge" }, m + " ", h("button", {
+              class: "link", title: "Remove " + m, onclick: function () {
+                api("DELETE", "/teams/" + encodeURIComponent(t.name) + "/members/" + encodeURIComponent(m))
+                  .then(function () { refreshReference().then(viewTeams); }).catch(fail);
+              }
+            }, "x"));
+          })), h("td", null, add));
+      });
+      var name = h("input", { id: "t-name", required: true });
+      var desc = h("input", { id: "t-desc" });
+      var form = h("form", {
+        class: "panel-body form-grid", onsubmit: function (ev) {
+          ev.preventDefault();
+          api("POST", "/teams", { name: name.value, description: desc.value })
+            .then(function () { toast("Team created"); refreshReference().then(viewTeams); }).catch(fail);
+        }
+      }, field("Name", name, { required: true }), field("Description", desc),
+        h("div", { class: "wide" }, h("button", { class: "primary", type: "submit" }, "Create team")));
+      render(adminPanel("Teams", form, table(["Name", "Description", "Members", ""], rows)));
+    }).catch(fail);
+  }
+
+  function viewFields() {
+    api("GET", "/custom-fields").then(function (fields) {
+      session.fields = fields;
+      var rows = fields.map(function (f) {
+        return h("tr", null, h("td", { class: "mono", text: f.name }), h("td", { text: f.label }),
+          h("td", { text: f.type }), h("td", { text: f.choices.join(", ") }),
+          h("td", null, h("input", {
+            type: "checkbox", checked: f.required, "aria-label": "Required", onchange: function (ev) {
+              api("PATCH", "/custom-fields/" + encodeURIComponent(f.name), { required: ev.target.checked })
+                .then(function () { toast("Updated"); viewFields(); }).catch(fail);
+            }
+          })),
+          h("td", null, h("button", {
+            class: "danger", onclick: function () {
+              if (!window.confirm("Delete custom field " + f.name + "? Existing values stay on tickets.")) return;
+              api("DELETE", "/custom-fields/" + encodeURIComponent(f.name)).then(viewFields).catch(fail);
+            }
+          }, "Delete")));
+      });
+      var name = h("input", { id: "cf-new-name", required: true, pattern: "[a-z0-9_]+", placeholder: "e.g. ticket_source" });
+      var label = h("input", { id: "cf-new-label" });
+      var type = select("cf-new-type", ["string", "number", "boolean", "choice", "date"], "string");
+      var choices = h("input", { id: "cf-new-choices", placeholder: "comma separated (choice only)" });
+      var required = h("input", { id: "cf-new-req", type: "checkbox" });
+      var form = h("form", {
+        class: "panel-body form-grid", onsubmit: function (ev) {
+          ev.preventDefault();
+          var body = { name: name.value, label: label.value, type: type.value, required: required.checked };
+          if (type.value === "choice") {
+            body.choices = choices.value.split(",").map(function (c) { return c.trim(); }).filter(Boolean);
+          }
+          api("POST", "/custom-fields", body).then(function () { toast("Field created"); viewFields(); }).catch(fail);
+        }
+      }, field("Name", name, { required: true }), field("Label", label), field("Type", type),
+        field("Choices", choices), field("Required", required),
+        h("div", { class: "wide" }, h("button", { class: "primary", type: "submit" }, "Create field")));
+      render(adminPanel("Custom fields", form,
+        table(["Name", "Label", "Type", "Choices", "Required", ""], rows)));
+    }).catch(fail);
+  }
+
+  function viewWebhooks() {
+    api("GET", "/webhooks").then(function (hooks) {
+      var log = h("div");
+      var rows = hooks.map(function (w) {
+        return h("tr", null, h("td", { text: String(w.id) }), h("td", { text: w.name }), h("td", { text: w.type }),
+          h("td", { class: "mono", text: w.url }), h("td", { text: w.events.join(", ") }),
+          h("td", { text: w.active ? "active" : "inactive" }),
+          h("td", { class: "actions" },
+            h("button", { onclick: function () { showDeliveries(w, log); } }, "Deliveries"),
+            h("button", {
+              class: "danger", onclick: function () {
+                if (!window.confirm("Delete webhook " + (w.name || w.id) + "?")) return;
+                api("DELETE", "/webhooks/" + w.id).then(viewWebhooks).catch(fail);
+              }
+            }, "Delete")));
+      });
+      var name = h("input", { id: "w-name" });
+      var type = select("w-type", [["generic", "Generic (signed JSON)"], ["soar", "Splunk SOAR (container + artifact)"]], "generic");
+      var url = h("input", { id: "w-url", required: true, placeholder: "https://soar.example.invalid" });
+      var secret = h("input", { id: "w-secret", type: "password", autocomplete: "off",
+        placeholder: "HMAC secret or SOAR ph-auth-token" });
+      var label = h("input", { id: "w-label", value: "mydemoticket" });
+      var verify = h("input", { id: "w-verify", type: "checkbox", checked: true });
+      var eventBoxes = EVENTS.map(function (e) {
+        return h("label", null, h("input", { type: "checkbox", checked: true, value: e }), " " + e);
+      });
+      var form = h("form", {
+        class: "panel-body form-grid", onsubmit: function (ev) {
+          ev.preventDefault();
+          var events = eventBoxes.map(function (l) { return l.firstChild; })
+            .filter(function (c) { return c.checked; }).map(function (c) { return c.value; });
+          api("POST", "/webhooks", {
+            name: name.value, type: type.value, url: url.value, secret: secret.value,
+            soar_label: label.value, verify_tls: verify.checked, events: events
+          }).then(function () { toast("Webhook created"); viewWebhooks(); }).catch(fail);
+        }
+      }, field("Name", name), field("Type", type), field("URL", url, { required: true }),
+        field("Secret / ph-auth-token", secret), field("SOAR container label", label),
+        field("Verify TLS", verify), h("div", { class: "wide" }, h("label", { text: "Events" }), eventBoxes),
+        h("div", { class: "wide" }, h("button", { class: "primary", type: "submit" }, "Create webhook")));
+      render(adminPanel("Webhooks", form,
+        table(["ID", "Name", "Type", "URL", "Events", "Status", ""], rows), log));
+    }).catch(fail);
+  }
+
+  function showDeliveries(w, target) {
+    api("GET", "/webhooks/" + w.id + "/deliveries").then(function (items) {
+      clear(target);
+      target.appendChild(h("div", { class: "panel" },
+        h("div", { class: "panel-head" }, h("h2", { text: "Deliveries for " + (w.name || "webhook " + w.id) }),
+          h("span", { class: "spacer" }), h("button", { onclick: function () { showDeliveries(w, target); } }, "Refresh")),
+        table(["Time", "Event", "Ticket", "Status", "HTTP", "Attempts", "Error"], items.map(function (d) {
+          return h("tr", null, h("td", { text: fmtTime(d.created_at) }), h("td", { text: d.event }),
+            h("td", { text: d.ticket_number || "" }), h("td", { class: "status-" + d.status, text: d.status }),
+            h("td", { text: d.response_code == null ? "" : String(d.response_code) }),
+            h("td", { text: String(d.attempts) }), h("td", { text: d.error }));
+        }))));
+    }).catch(fail);
+  }
+
+  start();
+})();
