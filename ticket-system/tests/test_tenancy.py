@@ -438,7 +438,9 @@ class ReportsTest(TenantFixture):
         self.assertEqual(self.admin.get("/reports/summary", headers=rpt).json, dict(rep, generated_at=self.admin.get(
             "/reports/summary", headers=rpt).json["generated_at"]))
         self.assertEqual(self.client_for("rpt-req", "rpt").get("/reports/summary").status, 403)
-        self.assertEqual(self.client_for("rpt-int", "rpt").get("/reports/summary").status, 403)
+        integration_report = self.client_for("rpt-int", "rpt").get("/reports/summary")  # read-only for SOAR/MCP
+        self.assertEqual(integration_report.status, 200)
+        self.assertEqual(integration_report.json["tenant"], "rpt")
         self.assertEqual(self.acme_admin.get("/reports/summary").json["tenant"], "acme")
 
 

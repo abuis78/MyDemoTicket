@@ -350,7 +350,7 @@ class Api:
     # reports
     # =====================================================================
     def reports_summary(self, ctx):
-        require_role(ctx.principal, "platform_admin", "admin", "agent")
+        require_role(ctx.principal, "platform_admin", "admin", "agent", "integration")  # read-only
         tid = self._tid(ctx)
         where, params = "tenant_id = ?", [tid]
         since_raw = ctx.query.get("since")

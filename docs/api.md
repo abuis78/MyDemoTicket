@@ -334,7 +334,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 
 ## Reports
 
-### `GET /reports/summary?since=<ISO>` (admin, agent, platform_admin in the request's tenant)
+### `GET /reports/summary?since=<ISO>` (admin, agent, integration, platform_admin in the request's tenant)
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" "$MDT/reports/summary?since=2026-11-01T00:00:00Z"
@@ -355,7 +355,7 @@ curl -s -H "Authorization: Bearer $TOKEN" "$MDT/reports/summary?since=2026-11-01
   the last 7 days.
 * `mttr_hours`: mean of `resolved_at − created_at` over tickets that have a
   `resolved_at` (resolved or closed), rounded to 2 decimals; `null` if there are none.
-* `requester` and `integration` → `403`.
+* `requester` → `403`; `integration` may read reports (read-only, e.g. SOAR or the MCP server).
 
 ## Audit
 
