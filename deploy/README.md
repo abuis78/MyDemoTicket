@@ -22,6 +22,12 @@ bundle), security group (80/443, no SSH), private S3 bucket with the code bundle
 On every boot `deploy/aws/boot.sh` fetches the bundle, derives `<ip>.sslip.io` from the current public IP and
 runs `install.sh --domain ticket.soc-games.com,<ip>.sslip.io`. Caddy runs as Docker container `caddy:2.8.4`.
 Login: user `admin`, password via `security find-generic-password -s mydemoticket -a admin-password -w`.
+`ticket.soc-games.com` goes through the existing load balancer `alb-aws` (default `ALB_NAME`): TLS with the ACM
+wildcard certificate on its 443 listener, host rule (priority 40) → target group `mydemoticket-8081` → instance
+port 8081 (plain HTTP, only from the ALB security group). DNS at one.com:
+`CNAME ticket → alb-aws-962976536.eu-central-1.elb.amazonaws.com` (same as soar/splunk/demo).
+Test before DNS exists:
+`curl --connect-to ticket.soc-games.com:443:alb-aws-962976536.eu-central-1.elb.amazonaws.com:443 https://ticket.soc-games.com/api/v1/health`.
 New code: run `deploy.sh` again (uploads the bundle), then reboot the instance.
 `deploy/aws/deploy.sh --uninstall` removes everything (data on the instance is lost).
 
