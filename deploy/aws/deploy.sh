@@ -34,7 +34,7 @@ TG_NAME="$NAME-$ALB_PORT"
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 EXTRA=""
 IFS=',' read -ra _pairs <<<"${EXTRA_TAGS:-}"
-for kv in "${_pairs[@]}"; do [ -n "$kv" ] && EXTRA="$EXTRA,{Key=${kv%%=*},Value=${kv#*=}}"; done
+for kv in ${_pairs[@]+"${_pairs[@]}"}; do [ -n "$kv" ] && EXTRA="$EXTRA,{Key=${kv%%=*},Value=${kv#*=}}"; done
 TAGS="ResourceType=%s,Tags=[{Key=Name,Value=$NAME},{Key=app,Value=mydemoticket}$EXTRA]"
 
 say() { printf '%s\n' "$*"; }
