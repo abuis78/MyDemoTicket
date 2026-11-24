@@ -12,6 +12,7 @@ Configuration (environment):
   MYDEMOTICKET_LOG_LEVEL   WARNING (default), INFO, DEBUG
 """
 
+import http.client
 import json
 import logging
 import os
@@ -118,8 +119,8 @@ class ApiClient(object):
                            exc.code)
         except urllib.error.URLError as exc:
             raise ApiError("cannot reach %s: %s" % (self.config.url, exc.reason))
-        except (OSError, ValueError) as exc:  # timeouts, connection resets, bad URL
-            raise ApiError("request to %s failed: %s" % (self.config.url, exc.__class__.__name__ + ": " + str(exc)))
+        except (OSError, ValueError, http.client.HTTPException) as exc:  # timeouts, resets, bad URL/response
+            raise ApiError("request to %s failed: %s" % (self.config.url, exc.__class__.__name__))
         if not raw:
             return None
         try:
