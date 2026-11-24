@@ -562,6 +562,36 @@ class TestSoarToTicket(E2ETestCase):
         commented = [d["payload"] for d in generic if d["payload"]["event"] == "ticket.commented"]
         self.assertEqual([(c["comment"]["author"], c["actor"]) for c in commented], [("jdoe", "soar")])
 
+    def test_summary_with_author_and_es_investigation_id(self):
+        _, r = self.connector("create_ticket", {"short_description": "E2E summary", "es_finding_id": "f-e2e-sum",
+                                                "es_investigation_id": "inv-e2e-1"}, container_id=4713)
+        number = r.get_summary()["ticket_number"]
+        self.assertEqual(r.get_data()[0]["external_refs"],
+                         {"soar_container_id": 4713, "es_finding_id": "f-e2e-sum", "es_investigation_id": "inv-e2e-1"})
+        _, r = self.connector("update_ticket", {"number": number, "es_investigation_id": "inv-e2e-2"})
+        self.assertEqual(self.ticket(number)["external_refs"],
+                         {"soar_container_id": 4713, "es_finding_id": "f-e2e-sum", "es_investigation_id": "inv-e2e-2"})
+
+        _, r = self.connector("add_comment", {"number": number, "body": "Root cause: phishing.\nMail blocked.",
+                                              "type": "summary", "author": "ai-assistant"})
+        entry = r.get_data()[0]
+        self.assertEqual((entry["type"], entry["author"], entry["actor"]), ("summary", "ai-assistant", "soar"))
+        summaries = [e for e in self.journal(number) if e["type"] == "summary"]
+        self.assertEqual([(e["author"], e["actor"], e["source"], e["body"]) for e in summaries],
+                         [("ai-assistant", "soar", "soar", "Root cause: phishing.\nMail blocked.")])
+        generic = self.wait_generic(number, 3)
+        commented = [d["payload"] for d in generic if d["payload"]["event"] == "ticket.commented"]
+        self.assertEqual([(c["comment"]["type"], c["comment"]["author"]) for c in commented],
+                         [("summary", "ai-assistant")])
+
+        # an analyst's summary is pushed to SOAR with commentType and esInvestigationId
+        analyst = self.api_client("analyst1")
+        self.ok(analyst.post("/tickets/%s/comments" % number, {"body": "Analyst summary", "type": "summary"}), 201)
+        artifacts = self.wait_soar_artifacts(number, 1)
+        self.assertEqual([(a["name"], a["cef"]["commentType"], a["cef"]["comment"], a["cef"]["esInvestigationId"])
+                          for a in artifacts],
+                         [("ticket.commented", "summary", "Analyst summary", "inv-e2e-2")])
+
     def test_invalid_transition_reported_as_error(self):
         _, r = self.connector("create_ticket", {"short_description": "E2E closed directly"})
         number = r.get_summary()["ticket_number"]
