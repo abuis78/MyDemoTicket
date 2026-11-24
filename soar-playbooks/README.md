@@ -73,8 +73,11 @@ Label: `notable` (adjust to the label your Splunk app ingests ES notables with).
 ## Known limits
 - Parameter names are checked against the Cloud SOAR app schemas (`GET /rest/app_action?_filter_app=163`
   Splunk 4.0.2, `?_filter_app=198` Enterprise Security 6.8.0); check them after app upgrades.
-- The investigation path (`esInvestigationId`, **update finding or investigation**) is covered by
-  unit tests only, not yet by a live run from this playbook.
+- The investigation path (`esInvestigationId`, **update finding or investigation**) was verified live
+  on 2026-11-24 (ES-00004 → status 5).
+- On a state change to resolved/closed/cancelled (not from source `soar`) the playbook also adds a
+  note "MyDemoTicket <number> geschlossen von <actor> (<state>): <close_notes>" to the investigation
+  (or the finding). Needs a ticket server that sends `cef.closeNotes`; otherwise the note has no text part.
 - Owner changes without a state change are not mirrored any more (no `update event` without a
   state change).
 - `mydemoticket_ticket_from_es` does not check whether a ticket already exists for the container.

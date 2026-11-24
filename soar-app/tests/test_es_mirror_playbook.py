@@ -10,7 +10,7 @@ import support
 
 PLAYBOOK = os.path.join(support.PLAYBOOK_DIR, "mydemoticket_es_mirror.py")
 FIELDS = ("label", "number", "state", "assigned_to", "comment", "comment_author", "comment_type", "actor",
-          "es_finding_id", "es_investigation_id", "source", "event", "artifact_id")
+          "es_finding_id", "es_investigation_id", "close_notes", "source", "event", "artifact_id")
 
 
 class FakeRules(types.ModuleType):
@@ -39,7 +39,7 @@ class FakeRules(types.ModuleType):
 def row(**values):
     base = {"label": "mydemoticket_event", "number": "TKT0001", "state": "in_progress", "assigned_to": "",
             "comment": "", "comment_author": None, "comment_type": None, "actor": None, "es_finding_id": "",
-            "es_investigation_id": None, "source": "web", "event": "ticket.updated", "artifact_id": 7}
+            "es_investigation_id": None, "close_notes": None, "source": "web", "event": "ticket.updated", "artifact_id": 7}
     base.update(values)
     return tuple(base[f] for f in FIELDS)
 
@@ -90,8 +90,11 @@ class TestEsMirrorPlaybook(unittest.TestCase):
 
     def test_state_change_on_finding_uses_update_event_without_comment(self):
         acts = self.run_with(row(event="ticket.state_changed", state="resolved", es_finding_id="f1",
-                                 assigned_to="analyst1"))
-        self.assertEqual(sorted(acts), ["update event"])
+                                 assigned_to="analyst1", actor="analyst1", close_notes="Blocked sender"))
+        self.assertEqual(sorted(acts), ["add finding or investigation note", "update event"])
+        self.assertEqual(acts["add finding or investigation note"]["parameters"],
+                         [{"id": "f1", "content": "MyDemoTicket TKT0001 geschlossen von analyst1 (resolved): Blocked sender",
+                           "context": {"artifact_id": 7}}])
         update = acts["update event"]
         self.assertEqual(update["assets"], ["splunk"])
         self.assertEqual(update["parameters"], [{"event_ids": "f1", "integer_status": "4", "owner": "analyst1",
@@ -109,10 +112,16 @@ class TestEsMirrorPlaybook(unittest.TestCase):
             row(event="ticket.state_changed", state="closed", es_finding_id="f1", es_investigation_id="inv-guid",
                 artifact_id=9))
         self.assertEqual(sorted(acts), ["add finding or investigation note", "update finding or investigation"])
-        self.assertEqual(acts["add finding or investigation note"]["parameters"][0]["id"], "inv-guid")
+        note_params = acts["add finding or investigation note"]["parameters"]
+        self.assertEqual([p["id"] for p in note_params], ["inv-guid", "inv-guid"])
+        self.assertEqual(note_params[1]["content"], "MyDemoTicket TKT0001 geschlossen von unknown (closed)")
         update = acts["update finding or investigation"]
         self.assertEqual(update["assets"], ["builtin_mc_connector"])
         self.assertEqual(update["parameters"], [{"id": "inv-guid", "status": "5", "context": {"artifact_id": 9}}])
+
+    def test_soar_close_is_ignored(self):
+        self.assertEqual(self.run_with(row(event="ticket.state_changed", state="resolved", source="soar",
+                                           es_investigation_id="inv-guid", close_notes="by playbook")), {})
 
     def test_investigation_in_progress_does_not_update_status(self):
         self.assertEqual(self.run_with(row(event="ticket.state_changed", state="in_progress",
