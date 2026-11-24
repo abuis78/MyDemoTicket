@@ -13,6 +13,12 @@
       <input type="search" id="global-search-input" placeholder="Search tickets" aria-label="Search tickets">
     </form>
     <div class="userbox" id="userbox" hidden>
+      <span class="tenant-box">
+        <span class="tenant-caption" id="tenant-caption">Tenant</span>
+        <span class="tenant-name" id="tenant-name" aria-describedby="tenant-caption"></span>
+        <label class="sr-only" for="tenant-switch">Active tenant</label>
+        <select id="tenant-switch" class="tenant-switch" hidden></select>
+      </span>
       <span id="user-name"></span>
       <button type="button" class="link" id="logout">Log out</button>
     </div>
@@ -25,11 +31,15 @@
       <a href="#/tickets?unassigned=1" data-nav="unassigned">Unassigned</a>
       <a href="#/tickets?all=1" data-nav="all">All tickets</a>
       <a href="#/new" data-nav="new">Create new</a>
+      <a class="reports-only" href="#/reports" data-nav="reports">Reports</a>
       <div class="nav-section admin-only">Administration</div>
       <a class="admin-only" href="#/admin/users" data-nav="users">Users</a>
       <a class="admin-only" href="#/admin/teams" data-nav="teams">Teams</a>
       <a class="admin-only" href="#/admin/custom-fields" data-nav="custom-fields">Custom fields</a>
       <a class="admin-only" href="#/admin/webhooks" data-nav="webhooks">Webhooks</a>
+      <a class="admin-only" href="#/admin/audit" data-nav="audit">Audit / Splunk</a>
+      <div class="nav-section platform-only">Platform</div>
+      <a class="platform-only" href="#/admin/tenants" data-nav="tenants">Tenants</a>
     </nav>
     <main id="main" class="content" tabindex="-1"></main>
   </div>
