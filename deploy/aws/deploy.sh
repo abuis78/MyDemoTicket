@@ -13,9 +13,13 @@
 # Env: AWS_PROFILE, AWS_REGION (default eu-central-1), NAME (default mydemoticket), INSTANCE_TYPE (default t4g.nano),
 #      DOMAIN (default ticket.soc-games.com, "none" for sslip.io only),
 #      ALB_NAME (default alb-aws, "none" = no load balancer), ALB_PORT (default 8081), ALB_RULE_PRIORITY (default 40),
-#      EXTRA_TAGS (optional "k=v,k=v", e.g. tags required by an SCP).
+#      EXTRA_TAGS (optional "k=v,k=v", e.g. tags required by an SCP),
+#      HEC_URL (Splunk HEC base URL, default https://splunk.soc-games.com:8088, "none" = HEC off),
+#      HEC_INDEX (default mydemoticket).
 # Secrets: admin password and admin API token are created in the macOS keychain (service "mydemoticket") and copied
 # to SSM Parameter Store (SecureString). They never appear in user data, on the command line or in output.
+# The Splunk HEC token is read from the keychain (service "mydemoticket", account "splunk-hec-token", created by
+# you); if it is missing, HEC stays off. The instance picks up the HEC parameters on its next boot.
 set -euo pipefail
 
 MODE=${1:-apply}
@@ -30,6 +34,8 @@ ALB_NAME=${ALB_NAME:-alb-aws}
 ALB_PORT=${ALB_PORT:-8081}
 ALB_RULE_PRIORITY=${ALB_RULE_PRIORITY:-40}
 [ "$ALB_NAME" = "none" ] && ALB_PORT=none
+HEC_URL=${HEC_URL:-https://splunk.soc-games.com:8088}
+HEC_INDEX=${HEC_INDEX:-mydemoticket}
 TG_NAME="$NAME-$ALB_PORT"
 ROOT=$(cd "$(dirname "$0")/../.." && pwd)
 EXTRA=""
@@ -87,7 +93,7 @@ if [ "$MODE" = "--uninstall" ]; then
     aws iam delete-role-policy --role-name "$NAME" --policy-name read-config
     aws iam delete-role --role-name "$NAME"
   fi
-  for p in ADMIN_PASSWORD ADMIN_TOKEN DOMAIN ALB_PORT; do
+  for p in ADMIN_PASSWORD ADMIN_TOKEN DOMAIN ALB_PORT HEC_URL HEC_INDEX HEC_TOKEN; do
     aws ssm delete-parameter --name "/$NAME/$p" 2>/dev/null && say "delete parameter /$NAME/$p" || true
   done
   if aws s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1; then
@@ -115,6 +121,13 @@ if [ "$MODE" = "--dry-run" ]; then
   [ "$(sg_id)" != "None" ] && say "security group exists" || say "would create security group $NAME (80, 443; no SSH)"
   aws s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1 && say "bucket $BUCKET exists" || say "would create private bucket $BUCKET"
   say "would write SSM parameters /$NAME/ADMIN_PASSWORD, /$NAME/ADMIN_TOKEN (SecureString), /$NAME/DOMAIN"
+  if [ "$HEC_URL" = "none" ]; then
+    say "HEC_URL=none: would write /$NAME/HEC_URL=none (HEC off) and delete /$NAME/HEC_TOKEN"
+  elif keychain splunk-hec-token >/dev/null 2>&1; then
+    say "would write SSM parameters /$NAME/HEC_URL=$HEC_URL, /$NAME/HEC_INDEX=$HEC_INDEX, /$NAME/HEC_TOKEN (SecureString, from keychain)"
+  else
+    say "WARNING: keychain item mydemoticket/splunk-hec-token missing: would write /$NAME/HEC_URL=none (HEC off)"
+  fi
   [ -n "$IID" ] && say "instance $IID exists" || say "would launch $INSTANCE_TYPE"
   if [ "$ALB_NAME" != "none" ]; then
     lst=$(https_listener "$(alb_arn)")
@@ -178,6 +191,26 @@ put_param ADMIN_PASSWORD SecureString "$(keychain admin-password)"
 put_param ADMIN_TOKEN SecureString "$(keychain admin-token)"
 put_param DOMAIN String "$DOMAIN"
 put_param ALB_PORT String "$ALB_PORT"
+HEC_ON=0
+if [ "$HEC_URL" != "none" ]; then
+  if keychain splunk-hec-token >/dev/null 2>&1; then
+    HEC_ON=1
+  else
+    say "WARNING: keychain item mydemoticket/splunk-hec-token missing - Splunk HEC stays off. Create it with:"
+    say "  security add-generic-password -s mydemoticket -a splunk-hec-token -w   (prompts for the token)"
+  fi
+fi
+if [ "$HEC_ON" = 1 ]; then
+  put_param HEC_URL String "$HEC_URL"
+  put_param HEC_INDEX String "$HEC_INDEX"
+  put_param HEC_TOKEN SecureString "$(keychain splunk-hec-token)"
+  say "Splunk HEC: $HEC_URL index $HEC_INDEX (token from keychain, SecureString)"
+else
+  put_param HEC_URL String none
+  put_param HEC_INDEX String "$HEC_INDEX"
+  aws ssm delete-parameter --name "/$NAME/HEC_TOKEN" >/dev/null 2>&1 || true
+  say "Splunk HEC: off"
+fi
 
 # ---------------------------------------------------------------- code bundle in a private bucket
 if ! aws s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1; then
