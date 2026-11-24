@@ -52,20 +52,56 @@
           <div class="wide"><label>External references</label><div class="mono">es_finding_id: finding-placeholder-0003  |  soar_container_id: 12</div></div>
         </div>
       </div>
+      <!-- Journal tabs (static: only the "Work notes" panel is shown, the others are hidden). -->
       <div class="panel">
-        <div class="panel-head"><h2>Activity</h2></div>
-        <form class="panel-body">
-          <div class="tabs"><button type="button" class="active">Work note</button><button type="button">Comment</button></div>
-          <textarea placeholder="Add a work note (internal)"></textarea>
-          <div><button class="primary" type="button">Post</button></div>
-        </form>
-        <div class="panel-body">
+        <div class="panel-head tabs-head">
+          <div class="tablist" role="tablist" aria-label="Ticket activity">
+            <button type="button" role="tab" id="tab-worknotes" aria-controls="tabpanel-worknotes" aria-selected="true" tabindex="0">Work notes (1)</button>
+            <button type="button" role="tab" id="tab-comments" aria-controls="tabpanel-comments" aria-selected="false" tabindex="-1">Comments (1)</button>
+            <button type="button" role="tab" id="tab-resolution" aria-controls="tabpanel-resolution" aria-selected="false" tabindex="-1">Resolution report</button>
+            <button type="button" role="tab" id="tab-audit" aria-controls="tabpanel-audit" aria-selected="false" tabindex="-1">Audit trail (2)</button>
+            <button type="button" role="tab" id="tab-history" aria-controls="tabpanel-history" aria-selected="false" tabindex="-1">History (6)</button>
+          </div>
+        </div>
+        <div class="panel-body tabpanel" role="tabpanel" id="tabpanel-worknotes" aria-labelledby="tab-worknotes" tabindex="0">
+          <form class="journal-form">
+            <label for="j-work_note">Add work note</label>
+            <textarea id="j-work_note" placeholder="Add a work note (internal)"></textarea>
+            <div><button class="primary" type="button">Add work note</button></div>
+          </form>
           <ul class="journal">
-            <li class="work_note"><div class="meta">Work note - soar - 24.11.2026, 15:33 - via soar</div><div class="body">URL reputation: malicious (placeholder result). Sender domain blocked.</div></li>
-            <li class="audit"><div class="meta">Field change - analyst1 - 24.11.2026, 15:32 - via web</div><div class="body">state: new → in_progress</div></li>
-            <li class="comment"><div class="meta">Comment - analyst1 - 24.11.2026, 15:31 - via web</div><div class="body">Thanks for reporting, we are looking into it.</div></li>
-            <li class="audit"><div class="meta">Field change - requester1 - 24.11.2026, 15:02 - via web</div><div class="body">Ticket created</div></li>
+            <li class="work_note"><div class="meta">Work note - jdoe (via soar) - 24.11.2026, 15:33 - via soar</div><div class="body">URL reputation: malicious (placeholder result). Sender domain blocked.</div></li>
           </ul>
+        </div>
+        <div class="panel-body tabpanel" role="tabpanel" id="tabpanel-comments" aria-labelledby="tab-comments" tabindex="0" hidden>
+          <ul class="journal">
+            <li class="comment"><div class="meta">Comment - analyst1 - 24.11.2026, 15:31 - via web</div><div class="body">Thanks for reporting, we are looking into it.</div></li>
+          </ul>
+        </div>
+        <div class="panel-body tabpanel" role="tabpanel" id="tabpanel-resolution" aria-labelledby="tab-resolution" tabindex="0" hidden>
+          <div class="report">
+            <h3>Close notes</h3>
+            <p class="muted">Not resolved yet.</p>
+            <p class="muted">Resolved: -</p>
+            <h3>Summary</h3>
+            <div class="summary-entry"><div class="meta">ai-assistant (via soar) - 24.11.2026, 15:40</div><div class="body">Root cause: phishing mail (placeholder).
+Sender domain blocked, mailbox cleaned.</div></div>
+            <details class="earlier"><summary>Earlier summaries (1)</summary>
+              <div class="summary-entry"><div class="meta">soar - 24.11.2026, 15:35</div><div class="body">First triage summary (placeholder).</div></div>
+            </details>
+          </div>
+        </div>
+        <div class="panel-body tabpanel" role="tabpanel" id="tabpanel-audit" aria-labelledby="tab-audit" tabindex="0" hidden>
+          <table class="list">
+            <thead><tr><th>Time</th><th>Field</th><th>Old → New</th><th>Actor</th><th>Source</th></tr></thead>
+            <tbody>
+              <tr><td>24.11.2026, 15:32</td><td class="mono">state</td><td class="pre-wrap">new → in_progress</td><td>analyst1</td><td>web</td></tr>
+              <tr><td>24.11.2026, 15:02</td><td class="mono">created</td><td class="pre-wrap">Ticket created</td><td>requester1</td><td>web</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="panel-body tabpanel" role="tabpanel" id="tabpanel-history" aria-labelledby="tab-history" tabindex="0" hidden>
+          <p class="muted">All entries chronologically (newest first), as before.</p>
         </div>
       </div>
     </main>
