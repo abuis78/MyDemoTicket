@@ -14,7 +14,7 @@ import json
 from datetime import datetime, timedelta
 
 # --- configuration -------------------------------------------------------------------------
-SPLUNK_ASSET = "splunk_es"          # name of the Splunk app asset in SOAR
+SPLUNK_ASSET = "splunk"             # name of the Splunk app asset in SOAR
 EVENT_LABEL = "mydemoticket_event"
 IGNORED_SOURCE = "soar"
 MIRROR_OWNER = True                 # set False if ticket users do not exist as ES users
@@ -93,7 +93,7 @@ def update_es_event(action=None, success=None, container=None, results=None, han
         param = {"event_ids": e["es_finding_id"], "context": {"artifact_id": e["artifact_id"]}}
         status = STATE_TO_ES_STATUS.get(e["state"])
         if status is not None:
-            param["integer_status"] = status
+            param["integer_status"] = str(status)  # Splunk app declares integer_status as string
         comment = e["comment"] or ""
         prefix = "MyDemoTicket {} ({}, state {})".format(e["number"], e["event"], e["state"])
         param["comment"] = "{}: {}".format(prefix, comment) if comment else prefix
