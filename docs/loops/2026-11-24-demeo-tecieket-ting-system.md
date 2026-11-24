@@ -38,6 +38,7 @@ Nuzte sub agent teams du bist orchestrator
 - Versuch 2 · Protokoll-Agent: model haiku, effort medium – HOCHGESTUFT von low auf medium, weil der Inspektor in Versuch 1 die Punkte 5 und 6 (Protokoll) nicht bestanden ließ.
 - Versuch 2 · Inspektor: model sonnet, effort medium – wie im Auftrag vorgegeben.
 - Versuch 2 · Protokoll-Nachtrag Urteil: model haiku, effort medium – nicht heruntergestuft (Regel: nie herunterstufen).
+- Ende · Protokoll-Nachtrag Push/PR: model haiku, effort medium.
 
 ## Annahmen
 1. „Mockups erst nach Freigabe“: Der Loop-Auftrag gilt als Freigabe („Dieser Auftrag ist die Freigabe“). Mockups werden als statische HTML-Dateien unter docs/mockups/ erstellt, der Bau läuft ohne Warten weiter.
@@ -63,8 +64,12 @@ Nuzte sub agent teams du bist orchestrator
 | 15:29 | Orchestrator | gh pr list --state open | GitHub API, Repo abuis78/MyDemoTicket | Stand holen (offene PRs, Ergebnis leer) – lesend |
 | 15:29 | Orchestrator | gh issue list --state open | GitHub API, Repo abuis78/MyDemoTicket | Stand holen (offene Issues, Ergebnis leer) – lesend |
 | 16:00 | Orchestrator | git fetch | github.com/abuis78/MyDemoTicket | Stand holen vor Versuch 2 |
+| 16:04 | Orchestrator | git fetch | github.com/abuis78/MyDemoTicket | Stand holen vor Push |
+| 16:04 | Orchestrator | git push -u origin feature/mydemoticket-loop | github.com/abuis78/MyDemoTicket | Branch veröffentlichen (ohne Rückfrage erlaubt) |
+| 16:04 | Orchestrator | gh pr create | GitHub API, Repo abuis78/MyDemoTicket | PR #1 öffnen: https://github.com/abuis78/MyDemoTicket/pull/1 (nicht gemergt) |
+| ~16:06 | Orchestrator | git push | github.com/abuis78/MyDemoTicket | diesen Protokoll-Nachtrag pushen |
 
-Geplant nach Bestehen (wird nach Ausführung hier bestätigt): git push des Branches feature/mydemoticket-loop und gh pr create in diesem Repository (beide ohne Rückfrage erlaubt).
+Push und PR nach Bestehen ausgeführt (siehe Tabelle).
 
 Nicht genutzt: keine MCP-Werkzeuge (Splunk, SOAR, AWS), kein WebFetch/WebSearch, kein curl/ssh nach außen.
 Agenten A, B, C, Protokoll-Agenten und Inspektor: keine externen Werkzeuge; Netz nur 127.0.0.1 (lokale Test-Server und Mocks). Lokale Werkzeuge ohne Netz: python3, git (lokal), node --check (Syntaxprüfung app.js, Agent A), Skill soar-app-builder (lokale Anleitung, Agent B).
@@ -115,4 +120,5 @@ Ergebnis Versuch 2: 6/6 – alle Punkte bestanden.
 
 ## Ende
 - Alle 6 Punkte vom Inspektor in Versuch 2 bestanden (ca. 16:05).
-- Nächster Schritt des Orchestrators: git push von feature/mydemoticket-loop nach origin und gh pr create (nicht mergen). Ergebnis wird in der Tabelle „Externe Werkzeuge“ und hier nachgetragen.
+- 16:04 Branch gepusht, PR geöffnet: https://github.com/abuis78/MyDemoTicket/pull/1 – nicht gemergt (Loop-Regel).
+- LOOP-ENDE: BESTANDEN
