@@ -131,7 +131,7 @@ class MigrationTest(unittest.TestCase):
         try:
             self.assertIsNone(app.credentials_file)  # no bootstrap on a populated database
             db = app.db
-            self.assertEqual(db.schema_version(), 2)
+            self.assertEqual(db.schema_version(), 3)
             for table, count in self.before.items():
                 with self.subTest(table=table):
                     self.assertEqual(db.query_one("SELECT COUNT(*) AS n FROM %s" % table)["n"], count)
