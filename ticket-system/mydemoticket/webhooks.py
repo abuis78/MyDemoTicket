@@ -58,6 +58,8 @@ def _http_post(url, payload, headers, verify_tls=True, timeout=10):
             data = exc.read()
         except Exception:  # pragma: no cover - defensive
             data = b""
+        finally:
+            exc.close()
         return exc.code, data
     except (urllib.error.URLError, OSError, ValueError) as exc:
         raise DeliveryError("connection error: %s" % getattr(exc, "reason", exc))

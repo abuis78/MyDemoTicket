@@ -269,7 +269,8 @@ class BootstrapTest(unittest.TestCase):
                     path = os.path.join(tmp, CREDENTIALS_FILE)
                     self.assertEqual(app.credentials_file, path)
                     self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
-                    content = open(path).read()
+                    with open(path, encoding="utf-8") as handle:
+                        content = handle.read()
                     for name in ("admin password", "admin API token", "analyst1 password",
                                  "analyst2 password", "requester1 password", "soar password", "soar API token"):
                         self.assertIn(name, content)
