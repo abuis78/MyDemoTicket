@@ -355,8 +355,11 @@ class MyDemoTicketConnector(BaseConnector):
         entries = [e for e in self._items(resp) if isinstance(e, dict)]
         if not entries:
             return False
-        if all("created_at" in e for e in entries):
-            entries = sorted(entries, key=lambda e: str(e.get("created_at")))
+        # The API returns the journal oldest-first (ORDER BY id); sort by timestamp only if all have one.
+        for ts_key in ("at", "created_at"):
+            if all(ts_key in e for e in entries):
+                entries = sorted(entries, key=lambda e, k=ts_key: str(e.get(k)))
+                break
         source = entries[-1].get("source")
         return source is not None and source == self._source_tag
 

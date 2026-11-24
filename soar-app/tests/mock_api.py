@@ -133,16 +133,16 @@ class MockTicketAPI(object):
                         ticket[key] = value
                 return 200, ticket
             if parts[2:] == ["journal"] and method == "GET":
-                entries = [{"id": "1", "type": "created", "author": "demo", "source": "web",
-                            "body": "", "created_at": "2026-11-24T09:00:00Z"}]
+                entries = [{"id": 1, "type": "comment", "actor": "demo", "source": "web",
+                            "body": "", "at": "2026-11-24T09:00:00Z"}]
                 if parts[1] in self.journal_source:
-                    entries.append({"id": "2", "type": "field_change", "author": "x",
+                    entries.append({"id": 2, "type": "audit", "actor": "x",
                                     "source": self.journal_source[parts[1]], "body": "",
-                                    "created_at": "2026-11-24T12:00:00Z"})
+                                    "at": "2026-11-24T12:00:00Z"})
                 return 200, entries
             if parts[2:] == ["comments"] and method == "POST":
                 if body.get("type") not in ("comment", "work_note"):
                     return 422, {"error": "invalid type"}
                 return 201, {"id": "99", "type": body["type"], "body": body["body"],
-                             "created_at": "2026-11-24T12:00:00Z"}
+                             "at": "2026-11-24T12:00:00Z"}
         return 404, {"error": "not found"}

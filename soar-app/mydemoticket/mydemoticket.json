@@ -947,9 +947,9 @@
                     "column_order": 2
                 },
                 {
-                    "data_path": "action_result.data.*.created_at",
+                    "data_path": "action_result.data.*.at",
                     "data_type": "string",
-                    "column_name": "Created",
+                    "column_name": "At",
                     "column_order": 3
                 },
                 {
@@ -1232,9 +1232,9 @@
                     "column_order": 0
                 },
                 {
-                    "data_path": "action_result.data.*.author",
+                    "data_path": "action_result.data.*.actor",
                     "data_type": "string",
-                    "column_name": "Author",
+                    "column_name": "Actor",
                     "column_order": 1
                 },
                 {
@@ -1250,10 +1250,16 @@
                     "column_order": 3
                 },
                 {
-                    "data_path": "action_result.data.*.created_at",
+                    "data_path": "action_result.data.*.field",
                     "data_type": "string",
-                    "column_name": "Created",
+                    "column_name": "Field",
                     "column_order": 4
+                },
+                {
+                    "data_path": "action_result.data.*.at",
+                    "data_type": "string",
+                    "column_name": "At",
+                    "column_order": 5
                 },
                 {
                     "data_path": "action_result.summary.ticket_number",
