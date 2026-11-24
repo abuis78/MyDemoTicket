@@ -34,6 +34,39 @@ python3 -m unittest discover -s tests -v > "${TMPDIR:-/tmp}/mdt-tests.txt" 2>&1;
 
 Success is the line `OK` after `Ran N tests`.
 
+## End-to-end tests
+
+`tests/e2e/` checks both directions between the ticket system and the SOAR app,
+using only the standard library and 127.0.0.1:
+
+```bash
+bash scripts/e2e.sh 3 > "${TMPDIR:-/tmp}/mdt-e2e.txt" 2>&1; echo "exit $?"; grep "E2E run" "${TMPDIR:-/tmp}/mdt-e2e.txt"
+```
+
+Each run prints `E2E run i/N: OK`; the script stops with exit code 1 at the
+first failed run. Every test class starts the real server
+(`python3 -m mydemoticket`) on a free port with a fresh temporary data
+directory, reads the generated credentials from `initial-credentials.txt`
+(never printed) and registers two webhooks:
+
+* a `soar` webhook pointing at `tests/e2e/soar_mock.py`, which emulates
+  `POST /rest/container` (duplicate detection by `source_data_identifier`) and
+  `POST /rest/artifact` and checks `ph-auth-token`;
+* a `generic` webhook whose receiver verifies the HMAC signature.
+
+Covered:
+
+| Direction | What is checked |
+|---|---|
+| Ticket → SOAR | analyst via API and via web login + CSRF: create, priority, custom fields, `new → in_progress → resolved`, comment, work note; one container per ticket, one artifact per event with the right `cef` values, `soar_container_id` stored on the ticket, signed generic webhooks; `on poll` ingests the changed tickets |
+| SOAR → Ticket | connector actions create/update ticket, set state, add comment/work note, get ticket, get journal, list tickets/custom fields; journal source `soar`, no echo to the SOAR webhook (`skipped`), generic webhook with source `soar`; `on poll` skips SOAR-made changes |
+| Round trip | SOAR creates ticket, analyst changes it, push arrives with `esFindingId`; polled and pushed container agree; ES status mapping of the mirror playbook |
+| Roles | requester never sees work notes; agent of another team gets 403 |
+
+Not covered: a real Splunk SOAR or Splunk ES instance, the playbooks' runtime
+behaviour (only their state → ES status mapping), and the browser UI itself
+(the web path is exercised via the same session/CSRF API calls the UI makes).
+
 ## Structure
 
 ```
@@ -44,6 +77,7 @@ docs/api.md                   REST API reference with curl examples
 docs/mockups/                 static HTML mockups of the UI
 deploy/                       systemd + Caddy installer for ticket.soc-games.com (EC2)
 soar-app/                     Splunk SOAR app for MyDemoTicket
+tests/e2e/                    end-to-end tests ticket system <-> SOAR app (scripts/e2e.sh)
 ```
 
 ## Moving to another machine
