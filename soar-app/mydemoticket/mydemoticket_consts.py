@@ -13,8 +13,9 @@ VALID_COMMENT_TYPES = ("comment", "work_note")
 VALID_PRIORITIES = (1, 2, 3, 4)
 ALLOWED_ROLES = ("integration", "agent", "admin")
 
-# Ticket priority -> SOAR container severity
-PRIORITY_TO_SEVERITY = {1: "high", 2: "medium", 3: "low", 4: "low"}
+# Ticket priority -> SOAR container severity (same mapping as the ticket system's SOAR webhook,
+# docs/api.md, so polled and pushed containers of one ticket agree)
+PRIORITY_TO_SEVERITY = {1: "high", 2: "high", 3: "medium", 4: "low"}
 
 STATE_LAST_POLL = "last_poll"
 POLL_PAGE_SIZE = 100
