@@ -536,12 +536,13 @@ Each event results in (header `ph-auth-token`, JSON):
     "cef": {"ticketNumber": "TKT0001001", "ticketState": "resolved", "ticketPriority": 2,
             "assignmentGroup": "SOC L1", "assignedTo": "analyst1", "event": "ticket.state_changed",
             "changes": "{\"state\": {...}}", "comment": "", "commentAuthor": "", "commentType": "",
-            "customFields": "{...}", "esFindingId": "finding-placeholder", "esInvestigationId": "",
+            "closeNotes": "Phishing blocked.", "customFields": "{...}", "esFindingId": "finding-placeholder", "esInvestigationId": "",
             "source": "web", "actor": "analyst1", "tenant": "soc-games"}}
    ```
    `changes` and `customFields` are JSON strings. For `ticket.commented`,
    `comment` is the body, `commentAuthor` the optional author (else `""`) and
    `commentType` the journal type (`comment`, `work_note`, `summary`; else `""`).
+   `closeNotes` is the ticket's current `close_notes` (`""` if empty).
    `esFindingId` / `esInvestigationId` come from `external_refs.es_finding_id` /
    `external_refs.es_investigation_id` (`""` if not set). `cef.actor` is the username that
    triggered the event (the token or session user, as `actor` in the generic payload). `cef.source` is an addition for

@@ -125,5 +125,22 @@ class EsInvestigationIdCefTest(ServerTestCase):
             soar_rx.close()
 
 
+class CloseNotesCefTest(ServerTestCase):
+    def test_cef_carries_close_notes(self):
+        soar_rx = Receiver(lambda path, body: (200, {"id": 45}))
+        try:
+            self.admin.post("/webhooks", {"type": "soar", "url": soar_rx.url, "secret": "s",
+                                          "events": ["ticket.created", "ticket.state_changed"]})
+            t = self.create_ticket()
+            self.assertEqual(self.admin.patch("/tickets/" + t["number"], {
+                "state": "resolved", "close_notes": "Phishing blocked.\nUser informed."}).status, 200)
+            self.wait_webhooks()
+            artifacts = [json.loads(r["body"]) for r in soar_rx.requests if r["path"].endswith("/rest/artifact")]
+            self.assertEqual([(a["name"], a["cef"]["closeNotes"]) for a in artifacts],
+                             [("ticket.created", ""), ("ticket.state_changed", "Phishing blocked.\nUser informed.")])
+        finally:
+            soar_rx.close()
+
+
 if __name__ == "__main__":
     unittest.main()
