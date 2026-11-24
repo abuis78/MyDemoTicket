@@ -82,7 +82,7 @@ Example for a local server: `claude mcp add mydemoticket-local -e MYDEMOTICKET_U
 | `create_ticket` | `POST /tickets` – `short_description` (required), `description`, `priority` 1–4, `assignment_group`, `assigned_to`, `category`, `custom_fields` | write |
 | `update_ticket` | `PATCH /tickets/{number}` – only the fields passed; `custom_fields`/`external_refs` are merged | write, idempotent |
 | `set_state` | `PATCH /tickets/{number}` – `state` new, in_progress, on_hold, resolved, closed, cancelled; `close_notes` required for resolved (checked before calling the API) | write, idempotent |
-| `add_comment` | `POST /tickets/{number}/comments` – `body`, `type` comment (default) or work_note, optional `author` (1–64 chars; journal shows `author (via <token user>)`) | write |
+| `add_comment` | `POST /tickets/{number}/comments` – `body`, `type` comment (default), work_note or summary (AI/resolution summary, visible like a comment), optional `author` (1–64 chars; journal shows `author (via <token user>)`) | write |
 | `get_journal` | `GET /tickets/{number}/journal` | read |
 | `list_custom_fields` | `GET /custom-fields` | read |
 | `reports_summary` | `GET /reports/summary` – optional `since`; says "not available on this server version" if the server has no such endpoint | read |
