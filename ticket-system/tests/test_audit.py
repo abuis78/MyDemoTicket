@@ -196,6 +196,10 @@ class HecTest(BaseCase):
         self.assertNotIn("index", ev)
         self.assertEqual(ev["fields"], {"tenant": "soc-games"})
         self.assertEqual(ev["event"]["action"], "ticket.state_change")
+        # tenant only as indexed field, not in the event body (avoids multivalue in Splunk)
+        self.assertNotIn("tenant", ev["event"])
+        # the local file keeps tenant
+        self.assertEqual(self.read_log()[0]["tenant"], "soc-games")
         self.assertEqual(ev["event"]["details"], {"from": "new", "to": "resolved"})
         st = lg.stats()
         self.assertTrue(st["hec_enabled"])

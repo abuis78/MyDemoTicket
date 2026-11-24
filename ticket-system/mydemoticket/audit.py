@@ -332,7 +332,9 @@ class AuditLogger:
         index = self._resolve_index(event.get("tenant"))
         if index:
             out["index"] = index
-        out["event"] = event
+        # tenant travels only as indexed field; sending it in the event body as well
+        # would make Splunk (KV_MODE=json) report a multivalue tenant field.
+        out["event"] = {k: v for k, v in event.items() if k != "tenant"}
         out["fields"] = {"tenant": event.get("tenant") or "unknown"}
         return out
 
