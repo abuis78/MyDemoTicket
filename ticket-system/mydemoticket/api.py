@@ -3,9 +3,11 @@
 import datetime
 import json
 import re
+import urllib.parse
 
 from . import __version__
 from .auth import (
+    ADMIN_ROLES,
     ROLES,
     AuthError,
     can_modify_ticket,
@@ -16,10 +18,25 @@ from .auth import (
     hash_token,
     new_token,
     require_role,
+    set_session_tenant,
     user_teams,
     verify_password,
 )
 from .db import dumps, loads, parse_iso, utcnow
+from .tenants import (
+    DEFAULT_TENANT_SLUG,
+    INDEX_RE,
+    SEED_TENANT_TEAMS,
+    SLUG_RE,
+    TENANT_HEADER,
+    default_tenant,
+    seed_custom_fields,
+    seed_teams,
+    tenant_by_id,
+    tenant_by_slug,
+    tenant_dict,
+    tenant_ref,
+)
 from .webhooks import EVENTS, TYPES
 
 STATES = ("new", "in_progress", "on_hold", "resolved", "closed", "cancelled")
@@ -32,6 +49,8 @@ TRANSITIONS = {
     "cancelled": (),
 }
 PRIORITIES = {1: "critical", 2: "high", 3: "moderate", 4: "low"}
+OPEN_STATES = ("new", "in_progress", "on_hold")
+UNASSIGNED_TEAM = "(none)"
 FIELD_TYPES = ("string", "number", "boolean", "choice", "date")
 
 TICKET_WRITABLE = (
@@ -96,10 +115,48 @@ def _bool(value, field):
     return value
 
 
+class NullAudit:
+    """Audit sink used when no logger is wired (e.g. Api used directly)."""
+
+    def log(self, action, **kwargs):
+        pass
+
+    def stats(self):
+        return {}
+
+
+def _url_host(url):
+    return urllib.parse.urlsplit(url).hostname or ""
+
+
 class Api:
-    def __init__(self, db, dispatcher):
+    def __init__(self, db, dispatcher, audit=None):
         self.db = db
         self.dispatcher = dispatcher
+        self.audit = audit or NullAudit()
+
+    # =====================================================================
+    # audit + tenant helpers
+    # =====================================================================
+    def _log(self, ctx, action, outcome="success", object_type=None, object_id=None, details=None,
+             tenant=None, actor=None, role=None):
+        p = ctx.principal
+        if tenant is None:
+            tenant = ctx.tenant["slug"] if ctx.tenant is not None else "unknown"
+        self.audit.log(
+            action, tenant=tenant,
+            actor=actor if actor is not None else (p.username if p else None),
+            role=role if role is not None else (p.role if p else None),
+            outcome=outcome, object_type=object_type, object_id=object_id, source=ctx.source,
+            ip=ctx.ip, request_id=ctx.request_id, details=details,
+        )
+
+    @staticmethod
+    def _tid(ctx):
+        return ctx.tenant["id"]
+
+    def _require_admin(self, ctx):
+        require_role(ctx.principal, *ADMIN_ROLES)
 
     # =====================================================================
     # misc
@@ -111,28 +168,234 @@ class Api:
         p = ctx.principal
         row = self.db.query_one("SELECT * FROM users WHERE id = ?", (p.id,))
         data = self._user_dict(row)
+        data["tenant"] = tenant_ref(ctx.tenant)
+        if p.is_platform_admin:
+            data["active_tenant"] = tenant_ref(ctx.tenant)
+            data["tenants"] = [tenant_dict(r) for r in self.db.query("SELECT * FROM tenants ORDER BY slug")]
         if p.via == "session":
             data["csrf_token"] = p.csrf_token
         return 200, data
 
-    def login(self, username, password):
-        """Returns (session_token, csrf_token, user_dict) or raises 401."""
+    def login(self, ctx):
+        """Returns (session_token, csrf_token, user_dict) or raises 401/403."""
+        body = ctx.body if isinstance(ctx.body, dict) else {}
+        username, password = body.get("username"), body.get("password")
         row = None
         if isinstance(username, str) and isinstance(password, str):
             row = self.db.query_one("SELECT * FROM users WHERE username = ?", (username,))
+        actor = username[:64] if isinstance(username, str) else None
+        user_tenant = None
+        if row is not None:
+            user_tenant = tenant_by_id(self.db, row["tenant_id"]) if row["tenant_id"] is not None \
+                else default_tenant(self.db)
+
+        def fail(reason):
+            self._log(ctx, "auth.login", outcome="failure", object_type="user", object_id=actor,
+                      details={"method": "password", "reason": reason},
+                      tenant=user_tenant["slug"] if user_tenant is not None else "unknown",
+                      actor=actor, role=row["role"] if row is not None else None)
+
         if row is None or not row["active"] or not row["password_hash"]:
             verify_password(password if isinstance(password, str) else "", _DUMMY_HASH)
+            fail("unknown user" if row is None else "user inactive or without password")
             raise ApiError(401, "invalid username or password")
         if not verify_password(password, row["password_hash"]):
+            fail("wrong password")
             raise ApiError(401, "invalid username or password")
+        if row["role"] != "platform_admin" and (user_tenant is None or not user_tenant["active"]):
+            fail("tenant inactive")
+            raise AuthError(403, "tenant inactive")
         session, csrf = create_session(self.db, row["id"])
+        ctx.tenant = user_tenant
         data = self._user_dict(row)
+        data["tenant"] = tenant_ref(user_tenant)
         data["csrf_token"] = csrf
+        self._log(ctx, "auth.login", object_type="user", object_id=row["username"],
+                  details={"method": "password"}, actor=row["username"], role=row["role"])
         return session, csrf, data
 
-    def logout(self, session):
+    def logout(self, ctx, session):
         delete_session(self.db, session)
+        self._log(ctx, "auth.logout", object_type="user", object_id=ctx.principal.username)
         return 200, {"status": "logged_out"}
+
+    def switch_tenant(self, ctx, session):
+        """POST /auth/tenant: a platform_admin stores the active tenant in the session."""
+        p = ctx.principal
+        require_role(p, "platform_admin")
+        if p.via != "session" or not session:
+            raise ApiError(400, "tenant switch needs a web session; API clients send the %s header"
+                           % TENANT_HEADER)
+        body = _require_obj(ctx.body)
+        unknown = set(body) - {"tenant"}
+        if unknown:
+            raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])
+        target = tenant_by_slug(self.db, body.get("tenant"))
+        if target is None:
+            raise ApiError(404, "tenant not found")
+        before = ctx.tenant["slug"] if ctx.tenant is not None else None
+        set_session_tenant(self.db, session, target["id"])
+        p.active_tenant_id = target["id"]
+        ctx.tenant = target
+        self._log(ctx, "auth.tenant_switch", object_type="tenant", object_id=target["slug"],
+                  details={"from": before, "to": target["slug"]})
+        return self.me(ctx)
+
+    def audit_status(self, ctx):
+        self._require_admin(ctx)
+        return 200, self.audit.stats()
+
+    # =====================================================================
+    # tenants (platform_admin)
+    # =====================================================================
+    def _load_tenant(self, slug):
+        row = tenant_by_slug(self.db, slug)
+        if row is None:
+            raise ApiError(404, "tenant not found")
+        return row
+
+    @staticmethod
+    def _tenant_optional_fields(body, current=None):
+        values = {}
+        if "soar_url" in body:
+            url = body["soar_url"]
+            if url in (None, ""):
+                values["soar_url"] = None
+            else:
+                url = _text(url, "soar_url", max_len=2000).strip()
+                if not re.match(r"^https?://[^\s/]+", url, re.IGNORECASE):
+                    raise ApiError(422, "'soar_url' must be an http(s) URL or null")
+                values["soar_url"] = url
+        if "splunk_index" in body:
+            index = body["splunk_index"]
+            if index in (None, ""):
+                values["splunk_index"] = None
+            elif not isinstance(index, str) or not INDEX_RE.match(index):
+                raise ApiError(422, "'splunk_index' must match [a-z0-9][a-z0-9_-]{0,79} or be null")
+            else:
+                values["splunk_index"] = index
+        return values
+
+    def list_tenants(self, ctx):
+        require_role(ctx.principal, "platform_admin")
+        return 200, [tenant_dict(r) for r in self.db.query("SELECT * FROM tenants ORDER BY slug")]
+
+    def get_tenant(self, ctx, slug):
+        require_role(ctx.principal, "platform_admin")
+        return 200, tenant_dict(self._load_tenant(slug))
+
+    def create_tenant(self, ctx):
+        require_role(ctx.principal, "platform_admin")
+        body = _require_obj(ctx.body)
+        unknown = set(body) - {"slug", "name", "active", "soar_url", "splunk_index", "seed"}
+        if unknown:
+            raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])
+        slug = body.get("slug")
+        if not isinstance(slug, str) or not SLUG_RE.match(slug):
+            raise ApiError(422, "'slug' must match [a-z0-9-]{2,32}")
+        name = _text(body.get("name"), "name", required=True, max_len=200).strip()
+        active = _bool(body.get("active", True), "active")
+        seed = _bool(body.get("seed", False), "seed")
+        optional = self._tenant_optional_fields(body)
+        if tenant_by_slug(self.db, slug) is not None:
+            raise ApiError(409, "tenant '%s' already exists" % slug)
+        now = utcnow()
+        with self.db.transaction():
+            cur = self.db.execute(
+                "INSERT INTO tenants(slug, name, active, soar_url, splunk_index, created_at, updated_at) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (slug, name, int(active), optional.get("soar_url"), optional.get("splunk_index"), now, now),
+            )
+            if seed:
+                seed_teams(self.db, cur.lastrowid, SEED_TENANT_TEAMS)
+                seed_custom_fields(self.db, cur.lastrowid)
+        row = self._load_tenant(slug)
+        self._log(ctx, "tenant.create", object_type="tenant", object_id=slug, tenant=slug,
+                  details={"name": name, "active": active, "seed": seed,
+                           "splunk_index": row["splunk_index"], "soar_url": row["soar_url"]})
+        return 201, tenant_dict(row)
+
+    def patch_tenant(self, ctx, slug):
+        require_role(ctx.principal, "platform_admin")
+        body = _require_obj(ctx.body)
+        row = self._load_tenant(slug)
+        for key in body:
+            if key in ("slug", "created_at", "updated_at", "default"):
+                raise ApiError(422, "'%s' is read-only" % key)
+            if key not in ("name", "active", "soar_url", "splunk_index"):
+                raise ApiError(422, "unknown field '%s'" % key)
+        new = {"name": row["name"], "active": bool(row["active"]), "soar_url": row["soar_url"],
+               "splunk_index": row["splunk_index"]}
+        if "name" in body:
+            new["name"] = _text(body["name"], "name", required=True, max_len=200).strip()
+        if "active" in body:
+            new["active"] = _bool(body["active"], "active")
+        new.update(self._tenant_optional_fields(body))
+        if slug == DEFAULT_TENANT_SLUG and not new["active"]:
+            raise ApiError(409, "the default tenant cannot be deactivated")
+        old = {"name": row["name"], "active": bool(row["active"]), "soar_url": row["soar_url"],
+               "splunk_index": row["splunk_index"]}
+        changes = {k: {"old": old[k], "new": new[k]} for k in new if old[k] != new[k]}
+        if changes:
+            self.db.execute(
+                "UPDATE tenants SET name = ?, active = ?, soar_url = ?, splunk_index = ?, updated_at = ? "
+                "WHERE id = ?",
+                (new["name"], int(new["active"]), new["soar_url"], new["splunk_index"], utcnow(), row["id"]),
+            )
+            self._log(ctx, "tenant.update", object_type="tenant", object_id=slug, tenant=slug,
+                      details={"changed": sorted(changes), "changes": changes})
+        return 200, tenant_dict(self._load_tenant(slug))
+
+    # =====================================================================
+    # reports
+    # =====================================================================
+    def reports_summary(self, ctx):
+        require_role(ctx.principal, "platform_admin", "admin", "agent")
+        tid = self._tid(ctx)
+        where, params = "tenant_id = ?", [tid]
+        since_raw = ctx.query.get("since")
+        if since_raw:
+            since = parse_iso(since_raw)
+            if since is None:
+                raise ApiError(422, "'since' must be an ISO-8601 timestamp")
+            where += " AND created_at >= ?"
+            params.append(since)
+        rows = self.db.query(
+            "SELECT state, priority, assignment_group, created_at, resolved_at FROM tickets WHERE " + where,
+            params,
+        )
+        now = datetime.datetime.now(datetime.timezone.utc).replace(microsecond=0)
+        week_ago = (now - datetime.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M:%SZ")
+        by_state = {s: 0 for s in STATES}
+        by_priority = {str(p): 0 for p in PRIORITIES}
+        by_team = {r["name"]: 0 for r in self.db.query("SELECT name FROM teams WHERE tenant_id = ?", (tid,))}
+        by_team[UNASSIGNED_TEAM] = 0
+        created_7d = resolved_7d = 0
+        durations = []
+        for r in rows:
+            by_state[r["state"]] = by_state.get(r["state"], 0) + 1
+            by_priority[str(r["priority"])] = by_priority.get(str(r["priority"]), 0) + 1
+            team = r["assignment_group"] or UNASSIGNED_TEAM
+            by_team[team] = by_team.get(team, 0) + 1
+            if r["created_at"] >= week_ago:
+                created_7d += 1
+            if r["resolved_at"]:
+                if r["resolved_at"] >= week_ago:
+                    resolved_7d += 1
+                durations.append(_seconds_between(r["created_at"], r["resolved_at"]))
+        mttr = round(sum(durations) / len(durations) / 3600.0, 2) if durations else None
+        return 200, {
+            "tenant": ctx.tenant["slug"],
+            "generated_at": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "tickets_total": len(rows),
+            "open_count": sum(by_state[s] for s in OPEN_STATES),
+            "by_state": by_state,
+            "by_priority": by_priority,
+            "by_team": by_team,
+            "created_last_7d": created_7d,
+            "resolved_last_7d": resolved_7d,
+            "mttr_hours": mttr,
+        }
 
     # =====================================================================
     # tickets
@@ -157,30 +420,33 @@ class Api:
             "close_notes": row["close_notes"],
         }
 
-    def _load_ticket(self, number):
+    def _load_ticket(self, number, tenant_id):
+        """Load a ticket of the given tenant; tickets of other tenants are 404."""
         if isinstance(number, str) and number.isdigit():
-            row = self.db.query_one("SELECT * FROM tickets WHERE id = ?", (int(number),))
+            row = self.db.query_one("SELECT * FROM tickets WHERE id = ? AND tenant_id = ?",
+                                    (int(number), tenant_id))
         else:
-            row = self.db.query_one("SELECT * FROM tickets WHERE number = ?", (number,))
+            row = self.db.query_one("SELECT * FROM tickets WHERE number = ? AND tenant_id = ?",
+                                    (number, tenant_id))
         if row is None:
             raise ApiError(404, "ticket not found")
         return row
 
-    def _readable_ticket(self, principal, number):
-        row = self._load_ticket(number)
-        if not can_read_ticket(principal, row):
+    def _readable_ticket(self, ctx, number):
+        row = self._load_ticket(number, self._tid(ctx))
+        if not can_read_ticket(ctx.principal, row):
             raise _forbidden("you may not access this ticket")
         return row
 
-    def _field_defs(self):
-        rows = self.db.query("SELECT * FROM custom_field_defs ORDER BY name")
+    def _field_defs(self, tenant_id):
+        rows = self.db.query("SELECT * FROM custom_field_defs WHERE tenant_id = ? ORDER BY name", (tenant_id,))
         return {r["name"]: self._field_def_dict(r) for r in rows}
 
-    def _validate_custom_values(self, values, existing=None, creating=False):
-        """Validate custom field values and return the merged dict."""
+    def _validate_custom_values(self, tenant_id, values, existing=None, creating=False):
+        """Validate custom field values against the tenant's definitions; return the merged dict."""
         if not isinstance(values, dict):
             raise ApiError(422, "'custom_fields' must be an object")
-        defs = self._field_defs()
+        defs = self._field_defs(tenant_id)
         merged = dict(existing or {})
         for name, value in values.items():
             definition = defs.get(name)
@@ -246,29 +512,30 @@ class Api:
                 raise ApiError(422, "external_refs values must be scalar")
         return merged
 
-    def _check_group(self, value):
+    def _check_group(self, value, tenant_id):
         if value is None or value == "":
             return None
         if not isinstance(value, str):
             raise ApiError(422, "'assignment_group' must be a team name or null")
-        if self.db.query_one("SELECT 1 FROM teams WHERE name = ?", (value,)) is None:
+        if self.db.query_one("SELECT 1 FROM teams WHERE name = ? AND tenant_id = ?", (value, tenant_id)) is None:
             raise ApiError(422, "unknown assignment_group '%s'" % value)
         return value
 
-    def _check_user(self, value, field, allow_null=True):
+    def _check_user(self, value, field, tenant_id, allow_null=True):
         if value is None or value == "":
             if allow_null:
                 return None
             raise ApiError(422, "'%s' is required" % field)
         if not isinstance(value, str):
             raise ApiError(422, "'%s' must be a username" % field)
-        if self.db.query_one("SELECT 1 FROM users WHERE username = ?", (value,)) is None:
+        if self.db.query_one("SELECT 1 FROM users WHERE username = ? AND tenant_id = ?",
+                             (value, tenant_id)) is None:
             raise ApiError(422, "unknown user '%s' for '%s'" % (value, field))
         return value
 
     def list_tickets(self, ctx):
         p, q = ctx.principal, ctx.query
-        where, params = [], []
+        where, params = ["tenant_id = ?"], [self._tid(ctx)]
         if p.role == "requester":
             where.append("caller = ?")
             params.append(p.username)
@@ -317,7 +584,7 @@ class Api:
         }
         if sort not in sort_map:
             raise ApiError(422, "unsupported sort '%s'" % sort)
-        clause = (" WHERE " + " AND ".join(where)) if where else ""
+        clause = " WHERE " + " AND ".join(where)
         total = self.db.query_one("SELECT COUNT(*) AS n FROM tickets" + clause, params)["n"]
         rows = self.db.query(
             "SELECT * FROM tickets%s ORDER BY %s LIMIT ? OFFSET ?" % (clause, sort_map[sort]),
@@ -326,10 +593,11 @@ class Api:
         return 200, {"items": [self._ticket_dict(r) for r in rows], "total": total}
 
     def get_ticket(self, ctx, number):
-        return 200, self._ticket_dict(self._readable_ticket(ctx.principal, number))
+        return 200, self._ticket_dict(self._readable_ticket(ctx, number))
 
     def create_ticket(self, ctx):
         p, body = ctx.principal, _require_obj(ctx.body)
+        tid = self._tid(ctx)
         for key in body:
             if key in TICKET_READONLY:
                 raise ApiError(422, "'%s' is read-only" % key)
@@ -348,12 +616,12 @@ class Api:
         description = _text(body.get("description"), "description")
         priority = _priority(body.get("priority", 3))
         category = _text(body.get("category"), "category", max_len=100)
-        group = self._check_group(body.get("assignment_group"))
-        assignee = self._check_user(body.get("assigned_to"), "assigned_to")
+        group = self._check_group(body.get("assignment_group"), tid)
+        assignee = self._check_user(body.get("assigned_to"), "assigned_to", tid)
         caller = p.username if p.role == "requester" else (
-            self._check_user(body.get("caller"), "caller") or p.username
+            self._check_user(body.get("caller"), "caller", tid) or p.username
         )
-        custom = self._validate_custom_values(body.get("custom_fields") or {}, creating=True)
+        custom = self._validate_custom_values(tid, body.get("custom_fields") or {}, creating=True)
         refs = self._validate_refs(body.get("external_refs") or {})
         now = utcnow()
         with self.db.transaction():
@@ -361,26 +629,34 @@ class Api:
             cur = self.db.execute(
                 "INSERT INTO tickets(number, short_description, description, state, priority, "
                 "assignment_group, assigned_to, caller, category, custom_fields, external_refs, "
-                "created_at, updated_at, resolved_at, close_notes) "
-                "VALUES(?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '')",
+                "created_at, updated_at, resolved_at, close_notes, tenant_id) "
+                "VALUES(?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, '', ?)",
                 (number, short, description, priority, group, assignee, caller, category,
-                 dumps(custom), dumps(refs), now, now),
+                 dumps(custom), dumps(refs), now, now, tid),
             )
-            self._audit(cur.lastrowid, "created", None, number, p.username, ctx.source, now)
-        ticket = self._ticket_dict(self._load_ticket(number))
-        self.dispatcher.emit("ticket.created", ticket, p.username, ctx.source)
+            self._audit(cur.lastrowid, tid, "created", None, number, p.username, ctx.source, now)
+        ticket = self._ticket_dict(self._load_ticket(number, tid))
+        initial = {k: {"old": None, "new": ticket[k]} for k in (
+            "short_description", "description", "state", "priority", "assignment_group", "assigned_to",
+            "caller", "category", "custom_fields", "external_refs") if ticket[k] not in (None, "", {})}
+        self._log(ctx, "ticket.create", object_type="ticket", object_id=number,
+                  details={"short_description": short, "priority": priority, "changes": initial})
+        self.dispatcher.emit("ticket.created", ticket, p.username, ctx.source, tenant=ctx.tenant,
+                             request_id=ctx.request_id)
         return 201, ticket
 
-    def _audit(self, ticket_id, field, old, new, actor, source, at):
+    def _audit(self, ticket_id, tenant_id, field, old, new, actor, source, at):
+        """Journal audit entry (ticket history), not the security audit log."""
         self.db.execute(
-            "INSERT INTO journal(ticket_id, type, body, field, old_value, new_value, actor, source, at) "
-            "VALUES(?, 'audit', NULL, ?, ?, ?, ?, ?, ?)",
-            (ticket_id, field, json.dumps(old), json.dumps(new), actor, source, at),
+            "INSERT INTO journal(ticket_id, tenant_id, type, body, field, old_value, new_value, actor, source, at) "
+            "VALUES(?, ?, 'audit', NULL, ?, ?, ?, ?, ?, ?)",
+            (ticket_id, tenant_id, field, json.dumps(old), json.dumps(new), actor, source, at),
         )
 
     def patch_ticket(self, ctx, number):
         p, body = ctx.principal, _require_obj(ctx.body)
-        row = self._readable_ticket(p, number)
+        tid = self._tid(ctx)
+        row = self._readable_ticket(ctx, number)
         for key in body:
             if key in TICKET_READONLY:
                 raise ApiError(422, "'%s' is read-only" % key)
@@ -403,15 +679,16 @@ class Api:
         if "category" in body:
             new["category"] = _text(body["category"], "category", max_len=100)
         if "assignment_group" in body:
-            new["assignment_group"] = self._check_group(body["assignment_group"])
+            new["assignment_group"] = self._check_group(body["assignment_group"], tid)
         if "assigned_to" in body:
-            new["assigned_to"] = self._check_user(body["assigned_to"], "assigned_to")
+            new["assigned_to"] = self._check_user(body["assigned_to"], "assigned_to", tid)
         if "caller" in body:
-            new["caller"] = self._check_user(body["caller"], "caller", allow_null=False)
+            new["caller"] = self._check_user(body["caller"], "caller", tid, allow_null=False)
         if "close_notes" in body:
             new["close_notes"] = _text(body["close_notes"], "close_notes")
         if "custom_fields" in body:
-            new["custom_fields"] = self._validate_custom_values(body["custom_fields"], current["custom_fields"])
+            new["custom_fields"] = self._validate_custom_values(tid, body["custom_fields"],
+                                                                current["custom_fields"])
         if "external_refs" in body:
             new["external_refs"] = self._validate_refs(body["external_refs"], current["external_refs"])
         now = utcnow()
@@ -446,10 +723,19 @@ class Api:
                  new["close_notes"], now, row["id"]),
             )
             for field, change in changes.items():
-                self._audit(row["id"], field, change["old"], change["new"], p.username, ctx.source, now)
-        ticket = self._ticket_dict(self._load_ticket(row["number"]))
-        event = "ticket.state_changed" if "state" in changes else "ticket.updated"
-        self.dispatcher.emit(event, ticket, p.username, ctx.source, changes=changes)
+                self._audit(row["id"], tid, field, change["old"], change["new"], p.username, ctx.source, now)
+        ticket = self._ticket_dict(self._load_ticket(row["number"], tid))
+        if "state" in changes:
+            event = "ticket.state_changed"
+            self._log(ctx, "ticket.state_change", object_type="ticket", object_id=row["number"],
+                      details={"from": changes["state"]["old"], "to": changes["state"]["new"],
+                               "changed": sorted(changes), "changes": changes})
+        else:
+            event = "ticket.updated"
+            self._log(ctx, "ticket.update", object_type="ticket", object_id=row["number"],
+                      details={"changed": sorted(changes), "changes": changes})
+        self.dispatcher.emit(event, ticket, p.username, ctx.source, changes=changes, tenant=ctx.tenant,
+                             request_id=ctx.request_id)
         return 200, ticket
 
     @staticmethod
@@ -467,7 +753,10 @@ class Api:
         return changes
 
     def store_soar_container_id(self, number, container_id):
-        """Persist the SOAR container id without emitting a webhook event."""
+        """Persist the SOAR container id without emitting a webhook event.
+
+        Ticket numbers are globally unique, so no tenant is needed here.
+        """
         with self.db.transaction():
             row = self.db.query_one("SELECT * FROM tickets WHERE number = ?", (number,))
             if row is None:
@@ -482,7 +771,7 @@ class Api:
                 "UPDATE tickets SET external_refs = ?, updated_at = ? WHERE id = ?",
                 (dumps(refs), now, row["id"]),
             )
-            self._audit(row["id"], "external_refs.soar_container_id", old, container_id,
+            self._audit(row["id"], row["tenant_id"], "external_refs.soar_container_id", old, container_id,
                         "system", "webhook", now)
 
     # -- journal ------------------------------------------------------------
@@ -504,16 +793,17 @@ class Api:
         return entry
 
     def journal(self, ctx, number):
-        row = self._readable_ticket(ctx.principal, number)
-        sql = "SELECT * FROM journal WHERE ticket_id = ?"
+        row = self._readable_ticket(ctx, number)
+        sql = "SELECT * FROM journal WHERE ticket_id = ? AND tenant_id = ?"
         if ctx.principal.role == "requester":
             sql += " AND type != 'work_note'"
-        rows = self.db.query(sql + " ORDER BY id ASC", (row["id"],))
+        rows = self.db.query(sql + " ORDER BY id ASC", (row["id"], self._tid(ctx)))
         return 200, [self._journal_dict(r) for r in rows]
 
     def add_comment(self, ctx, number):
         p, body = ctx.principal, _require_obj(ctx.body)
-        row = self._readable_ticket(p, number)
+        tid = self._tid(ctx)
+        row = self._readable_ticket(ctx, number)
         kind = body.get("type", "comment")
         if kind not in ("comment", "work_note"):
             raise ApiError(422, "'type' must be 'comment' or 'work_note'")
@@ -529,15 +819,19 @@ class Api:
         now = utcnow()
         with self.db.transaction():
             cur = self.db.execute(
-                "INSERT INTO journal(ticket_id, type, body, actor, source, at) VALUES(?, ?, ?, ?, ?, ?)",
-                (row["id"], kind, text, p.username, ctx.source, now),
+                "INSERT INTO journal(ticket_id, tenant_id, type, body, actor, source, at) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?)",
+                (row["id"], tid, kind, text, p.username, ctx.source, now),
             )
             self.db.execute("UPDATE tickets SET updated_at = ? WHERE id = ?", (now, row["id"]))
             entry = self._journal_dict(
                 self.db.query_one("SELECT * FROM journal WHERE id = ?", (cur.lastrowid,))
             )
-        ticket = self._ticket_dict(self._load_ticket(row["number"]))
-        self.dispatcher.emit("ticket.commented", ticket, p.username, ctx.source, comment=entry)
+        ticket = self._ticket_dict(self._load_ticket(row["number"], tid))
+        self._log(ctx, "ticket.comment", object_type="ticket", object_id=row["number"],
+                  details={"type": kind, "kind": kind, "journal_id": entry["id"]})
+        self.dispatcher.emit("ticket.commented", ticket, p.username, ctx.source, comment=entry,
+                             tenant=ctx.tenant, request_id=ctx.request_id)
         return 201, entry
 
     # =====================================================================
@@ -555,7 +849,7 @@ class Api:
         }
 
     def list_custom_fields(self, ctx):
-        return 200, list(self._field_defs().values())
+        return 200, list(self._field_defs(self._tid(ctx)).values())
 
     @staticmethod
     def _choices(value, ftype):
@@ -572,7 +866,8 @@ class Api:
         return value
 
     def create_custom_field(self, ctx):
-        require_role(ctx.principal, "admin")
+        self._require_admin(ctx)
+        tid = self._tid(ctx)
         body = _require_obj(ctx.body)
         unknown = set(body) - {"name", "label", "type", "choices", "required"}
         if unknown:
@@ -586,19 +881,22 @@ class Api:
         label = _text(body.get("label"), "label", max_len=200) or name
         choices = self._choices(body.get("choices"), ftype)
         required = _bool(body.get("required", False), "required")
-        if self.db.query_one("SELECT 1 FROM custom_field_defs WHERE name = ?", (name,)):
+        if self.db.query_one("SELECT 1 FROM custom_field_defs WHERE name = ? AND tenant_id = ?", (name, tid)):
             raise ApiError(409, "custom field '%s' already exists" % name)
         self.db.execute(
-            "INSERT INTO custom_field_defs(name, label, type, choices, required, created_at) "
-            "VALUES(?, ?, ?, ?, ?, ?)",
-            (name, label, ftype, json.dumps(choices), int(required), utcnow()),
+            "INSERT INTO custom_field_defs(tenant_id, name, label, type, choices, required, created_at) "
+            "VALUES(?, ?, ?, ?, ?, ?, ?)",
+            (tid, name, label, ftype, json.dumps(choices), int(required), utcnow()),
         )
-        return 201, self._field_defs()[name]
+        self._log(ctx, "custom_field.create", object_type="custom_field", object_id=name,
+                  details={"type": ftype, "label": label, "required": required, "choices": choices})
+        return 201, self._field_defs(tid)[name]
 
     def patch_custom_field(self, ctx, name):
-        require_role(ctx.principal, "admin")
+        self._require_admin(ctx)
+        tid = self._tid(ctx)
         body = _require_obj(ctx.body)
-        current = self._field_defs().get(name)
+        current = self._field_defs(tid).get(name)
         if current is None:
             raise ApiError(404, "custom field not found")
         for key in body:
@@ -610,50 +908,71 @@ class Api:
         choices = self._choices(body["choices"], current["type"]) if "choices" in body else current["choices"]
         required = _bool(body["required"], "required") if "required" in body else current["required"]
         self.db.execute(
-            "UPDATE custom_field_defs SET label = ?, choices = ?, required = ? WHERE name = ?",
-            (label, json.dumps(choices), int(required), name),
+            "UPDATE custom_field_defs SET label = ?, choices = ?, required = ? WHERE name = ? AND tenant_id = ?",
+            (label, json.dumps(choices), int(required), name, tid),
         )
-        return 200, self._field_defs()[name]
+        updated = self._field_defs(tid)[name]
+        changes = {k: {"old": current[k], "new": updated[k]} for k in ("label", "choices", "required")
+                   if current[k] != updated[k]}
+        self._log(ctx, "custom_field.update", object_type="custom_field", object_id=name,
+                  details={"changed": sorted(changes), "changes": changes})
+        return 200, updated
 
     def delete_custom_field(self, ctx, name):
-        require_role(ctx.principal, "admin")
-        cur = self.db.execute("DELETE FROM custom_field_defs WHERE name = ?", (name,))
+        self._require_admin(ctx)
+        cur = self.db.execute("DELETE FROM custom_field_defs WHERE name = ? AND tenant_id = ?",
+                              (name, self._tid(ctx)))
         if cur.rowcount == 0:
             raise ApiError(404, "custom field not found")
+        self._log(ctx, "custom_field.delete", object_type="custom_field", object_id=name)
         return 204, None
 
     # =====================================================================
     # users & tokens
     # =====================================================================
     def _user_dict(self, row):
+        tenant = tenant_by_id(self.db, row["tenant_id"])
         return {
             "username": row["username"],
             "display_name": row["display_name"],
             "email": row["email"],
             "role": row["role"],
+            "tenant": tenant["slug"] if tenant is not None else None,
             "active": bool(row["active"]),
             "teams": user_teams(self.db, row["id"]),
             "has_password": bool(row["password_hash"]),
             "created_at": row["created_at"],
         }
 
-    def _load_user(self, username):
+    def _visible_user(self, ctx, row):
+        """Users of the request's tenant; platform admins additionally see platform admins."""
+        if row["tenant_id"] is None:
+            return ctx.principal.is_platform_admin
+        return row["tenant_id"] == self._tid(ctx)
+
+    def _load_user(self, ctx, username):
         row = self.db.query_one("SELECT * FROM users WHERE username = ?", (username,))
-        if row is None:
+        if row is None or not self._visible_user(ctx, row):
             raise ApiError(404, "user not found")
         return row
 
     def list_users(self, ctx):
-        require_role(ctx.principal, "admin", "agent", "integration")
-        rows = self.db.query("SELECT * FROM users ORDER BY username")
+        require_role(ctx.principal, "platform_admin", "admin", "agent", "integration")
+        if ctx.principal.is_platform_admin:
+            rows = self.db.query("SELECT * FROM users WHERE tenant_id = ? OR tenant_id IS NULL ORDER BY username",
+                                 (self._tid(ctx),))
+        else:
+            rows = self.db.query("SELECT * FROM users WHERE tenant_id = ? ORDER BY username", (self._tid(ctx),))
         return 200, [self._user_dict(r) for r in rows]
 
-    def _set_user_teams(self, user_id, teams):
+    def _set_user_teams(self, user_id, teams, tenant_id):
         if not isinstance(teams, list) or not all(isinstance(t, str) for t in teams):
             raise ApiError(422, "'teams' must be a list of team names")
         ids = []
         for name in teams:
-            team = self.db.query_one("SELECT id FROM teams WHERE name = ?", (name,))
+            team = None
+            if tenant_id is not None:
+                team = self.db.query_one("SELECT id FROM teams WHERE name = ? AND tenant_id = ?", (name, tenant_id))
             if team is None:
                 raise ApiError(422, "unknown team '%s'" % name)
             ids.append(team["id"])
@@ -667,10 +986,33 @@ class Api:
             raise ApiError(422, "'password' must be a string with at least 8 characters")
         return value
 
+    def _target_tenant_for_new_user(self, ctx, body, role):
+        """Tenant id for POST /users (None for platform_admin)."""
+        p = ctx.principal
+        slug = body.get("tenant")
+        if role == "platform_admin":
+            if not p.is_platform_admin:
+                raise _forbidden("only platform admins may create platform admins")
+            if slug not in (None, ""):
+                raise ApiError(422, "platform_admin users have no tenant")
+            if body.get("teams"):
+                raise ApiError(422, "platform_admin users cannot be team members")
+            return None
+        if p.is_platform_admin:
+            if slug in (None, ""):
+                raise ApiError(422, "'tenant' (slug) is required")
+            row = tenant_by_slug(self.db, slug)
+            if row is None:
+                raise ApiError(422, "unknown tenant '%s'" % slug)
+            return row["id"]
+        if slug not in (None, "") and slug != ctx.tenant["slug"]:
+            raise AuthError(403, "tenant mismatch")
+        return self._tid(ctx)
+
     def create_user(self, ctx):
-        require_role(ctx.principal, "admin")
+        self._require_admin(ctx)
         body = _require_obj(ctx.body)
-        unknown = set(body) - {"username", "display_name", "email", "role", "password", "teams", "active"}
+        unknown = set(body) - {"username", "display_name", "email", "role", "password", "teams", "active", "tenant"}
         if unknown:
             raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])
         username = body.get("username")
@@ -679,6 +1021,7 @@ class Api:
         role = body.get("role")
         if role not in ROLES:
             raise ApiError(422, "'role' must be one of: %s" % ", ".join(ROLES))
+        tenant_id = self._target_tenant_for_new_user(ctx, body, role)
         display = _text(body.get("display_name"), "display_name", max_len=200) or username
         email = _text(body.get("email"), "email", max_len=200)
         password = self._password(body["password"]) if body.get("password") is not None else None
@@ -687,40 +1030,55 @@ class Api:
             raise ApiError(409, "user '%s' already exists" % username)
         with self.db.transaction():
             cur = self.db.execute(
-                "INSERT INTO users(username, display_name, email, role, password_hash, active, created_at) "
-                "VALUES(?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO users(username, display_name, email, role, password_hash, active, created_at, "
+                "tenant_id) VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
                 (username, display, email, role, hash_password(password) if password else None,
-                 int(active), utcnow()),
+                 int(active), utcnow(), tenant_id),
             )
             if "teams" in body:
-                self._set_user_teams(cur.lastrowid, body["teams"])
-        return 201, self._user_dict(self._load_user(username))
+                self._set_user_teams(cur.lastrowid, body["teams"], tenant_id)
+        user = self._user_dict(self.db.query_one("SELECT * FROM users WHERE username = ?", (username,)))
+        self._log(ctx, "user.create", object_type="user", object_id=username,
+                  tenant=user["tenant"] or ctx.tenant["slug"],
+                  details={"role": role, "tenant": user["tenant"], "active": active, "teams": user["teams"],
+                           "changed": sorted(k for k in body if k != "password"),
+                           "password_set": password is not None})
+        return 201, user
 
-    def _active_admins(self):
-        return self.db.query_one("SELECT COUNT(*) AS n FROM users WHERE role = 'admin' AND active = 1")["n"]
+    def _active_platform_admins(self):
+        return self.db.query_one(
+            "SELECT COUNT(*) AS n FROM users WHERE role = 'platform_admin' AND active = 1"
+        )["n"]
 
     def patch_user(self, ctx, username):
-        require_role(ctx.principal, "admin")
+        self._require_admin(ctx)
+        p = ctx.principal
         body = _require_obj(ctx.body)
-        row = self._load_user(username)
+        row = self._load_user(ctx, username)
         for key in body:
-            if key in ("username", "created_at"):
+            if key in ("username", "created_at", "tenant"):
                 raise ApiError(422, "'%s' is read-only" % key)
             if key not in ("display_name", "email", "role", "password", "teams", "active"):
                 raise ApiError(422, "unknown field '%s'" % key)
         role = body.get("role", row["role"])
         if role not in ROLES:
             raise ApiError(422, "'role' must be one of: %s" % ", ".join(ROLES))
+        if role == "platform_admin" and not p.is_platform_admin:
+            raise _forbidden("only platform admins may grant the role platform_admin")
         active = _bool(body["active"], "active") if "active" in body else bool(row["active"])
-        if row["role"] == "admin" and row["active"] and (role != "admin" or not active) \
-                and self._active_admins() <= 1:
-            raise ApiError(409, "cannot demote or deactivate the last active admin")
+        if row["role"] == "platform_admin" and row["active"] and (role != "platform_admin" or not active) \
+                and self._active_platform_admins() <= 1:
+            raise ApiError(409, "cannot demote or deactivate the last active platform admin")
+        if (role == "platform_admin") != (row["role"] == "platform_admin"):
+            raise ApiError(422, "changing a role to or from platform_admin is not supported; "
+                                "create a new user instead")
         display = _text(body["display_name"], "display_name", max_len=200) if "display_name" in body \
             else row["display_name"]
         email = _text(body["email"], "email", max_len=200) if "email" in body else row["email"]
         pw_hash = row["password_hash"]
         if "password" in body:
             pw_hash = hash_password(self._password(body["password"])) if body["password"] is not None else None
+        before = self._user_dict(row)
         with self.db.transaction():
             self.db.execute(
                 "UPDATE users SET display_name = ?, email = ?, role = ?, active = ?, password_hash = ? "
@@ -728,10 +1086,17 @@ class Api:
                 (display, email, role, int(active), pw_hash, row["id"]),
             )
             if "teams" in body:
-                self._set_user_teams(row["id"], body["teams"])
+                self._set_user_teams(row["id"], body["teams"], row["tenant_id"])
             if not active or "password" in body:
                 self.db.execute("DELETE FROM sessions WHERE user_id = ?", (row["id"],))
-        return 200, self._user_dict(self._load_user(username))
+        after = self._user_dict(self._load_user(ctx, username))
+        changes = {k: {"old": before[k], "new": after[k]}
+                   for k in ("display_name", "email", "role", "active", "teams") if before[k] != after[k]}
+        self._log(ctx, "user.update", object_type="user", object_id=username,
+                  tenant=after["tenant"] or ctx.tenant["slug"],
+                  details={"changed": sorted(body), "changes": changes,
+                           "password_changed": "password" in body})
+        return 200, after
 
     @staticmethod
     def _token_dict(row):
@@ -743,15 +1108,15 @@ class Api:
         }
 
     def list_tokens(self, ctx, username):
-        require_role(ctx.principal, "admin")
-        row = self._load_user(username)
+        self._require_admin(ctx)
+        row = self._load_user(ctx, username)
         rows = self.db.query("SELECT * FROM api_tokens WHERE user_id = ? ORDER BY id", (row["id"],))
         return 200, [self._token_dict(r) for r in rows]
 
     def create_token(self, ctx, username):
-        require_role(ctx.principal, "admin")
+        self._require_admin(ctx)
         body = _require_obj(ctx.body)
-        row = self._load_user(username)
+        row = self._load_user(ctx, username)
         name = _text(body.get("name"), "name", max_len=100) or "api"
         token = new_token()
         cur = self.db.execute(
@@ -759,18 +1124,24 @@ class Api:
             (row["id"], name, hash_token(token), utcnow()),
         )
         data = self._token_dict(self.db.query_one("SELECT * FROM api_tokens WHERE id = ?", (cur.lastrowid,)))
+        self._log(ctx, "token.create", object_type="token", object_id=str(data["id"]),
+                  details={"name": name, "username": username})
         data["username"] = username
         data["token"] = token
         return 201, data
 
     def delete_token(self, ctx, username, token_id):
-        require_role(ctx.principal, "admin")
-        row = self._load_user(username)
+        self._require_admin(ctx)
+        row = self._load_user(ctx, username)
+        existing = self.db.query_one("SELECT name FROM api_tokens WHERE id = ? AND user_id = ?",
+                                     (int(token_id), row["id"]))
         cur = self.db.execute(
             "DELETE FROM api_tokens WHERE id = ? AND user_id = ?", (int(token_id), row["id"])
         )
         if cur.rowcount == 0:
             raise ApiError(404, "token not found")
+        self._log(ctx, "token.revoke", object_type="token", object_id=str(int(token_id)),
+                  details={"name": existing["name"] if existing else None, "username": username})
         return 204, None
 
     # =====================================================================
@@ -788,18 +1159,20 @@ class Api:
             "members": [m["username"] for m in members],
         }
 
-    def _load_team(self, name):
-        row = self.db.query_one("SELECT * FROM teams WHERE name = ?", (name,))
+    def _load_team(self, ctx, name):
+        row = self.db.query_one("SELECT * FROM teams WHERE name = ? AND tenant_id = ?", (name, self._tid(ctx)))
         if row is None:
             raise ApiError(404, "team not found")
         return row
 
     def list_teams(self, ctx):
-        require_role(ctx.principal, "admin", "agent", "integration")
-        return 200, [self._team_dict(r) for r in self.db.query("SELECT * FROM teams ORDER BY name")]
+        require_role(ctx.principal, "platform_admin", "admin", "agent", "integration")
+        rows = self.db.query("SELECT * FROM teams WHERE tenant_id = ? ORDER BY name", (self._tid(ctx),))
+        return 200, [self._team_dict(r) for r in rows]
 
     def create_team(self, ctx):
-        require_role(ctx.principal, "admin")
+        self._require_admin(ctx)
+        tid = self._tid(ctx)
         body = _require_obj(ctx.body)
         unknown = set(body) - {"name", "description", "members"}
         if unknown:
@@ -809,39 +1182,49 @@ class Api:
         members = body.get("members", [])
         if not isinstance(members, list) or not all(isinstance(m, str) for m in members):
             raise ApiError(422, "'members' must be a list of usernames")
-        if self.db.query_one("SELECT 1 FROM teams WHERE name = ?", (name,)):
+        if self.db.query_one("SELECT 1 FROM teams WHERE name = ? AND tenant_id = ?", (name, tid)):
             raise ApiError(409, "team '%s' already exists" % name)
         with self.db.transaction():
-            cur = self.db.execute("INSERT INTO teams(name, description) VALUES(?, ?)", (name, description))
+            cur = self.db.execute("INSERT INTO teams(tenant_id, name, description) VALUES(?, ?, ?)",
+                                  (tid, name, description))
             for username in members:
-                user = self._load_user_422(username)
+                user = self._load_user_422(ctx, username)
                 self.db.execute(
                     "INSERT OR IGNORE INTO team_members(team_id, user_id) VALUES(?, ?)",
                     (cur.lastrowid, user["id"]),
                 )
-        return 201, self._team_dict(self._load_team(name))
+        team = self._team_dict(self._load_team(ctx, name))
+        self._log(ctx, "team.create", object_type="team", object_id=name,
+                  details={"description": description, "members": team["members"]})
+        return 201, team
 
-    def _load_user_422(self, username):
-        row = self.db.query_one("SELECT * FROM users WHERE username = ?", (username,))
+    def _load_user_422(self, ctx, username):
+        """Team members must be users of the same tenant."""
+        row = self.db.query_one("SELECT * FROM users WHERE username = ? AND tenant_id = ?",
+                                (username, self._tid(ctx)))
         if row is None:
             raise ApiError(422, "unknown user '%s'" % username)
         return row
 
     def add_team_member(self, ctx, name):
-        require_role(ctx.principal, "admin")
+        self._require_admin(ctx)
         body = _require_obj(ctx.body)
-        team = self._load_team(name)
-        user = self._load_user_422(body.get("username"))
+        team = self._load_team(ctx, name)
+        user = self._load_user_422(ctx, body.get("username"))
         self.db.execute(
             "INSERT OR IGNORE INTO team_members(team_id, user_id) VALUES(?, ?)", (team["id"], user["id"])
         )
+        self._log(ctx, "team.member_add", object_type="team", object_id=name,
+                  details={"username": user["username"]})
         return 200, self._team_dict(team)
 
     def remove_team_member(self, ctx, name, username):
-        require_role(ctx.principal, "admin")
-        team = self._load_team(name)
-        user = self._load_user(username)
+        self._require_admin(ctx)
+        team = self._load_team(ctx, name)
+        user = self._load_user(ctx, username)
         self.db.execute("DELETE FROM team_members WHERE team_id = ? AND user_id = ?", (team["id"], user["id"]))
+        self._log(ctx, "team.member_remove", object_type="team", object_id=name,
+                  details={"username": username})
         return 200, self._team_dict(team)
 
     # =====================================================================
@@ -862,12 +1245,20 @@ class Api:
             "created_at": row["created_at"],
         }
 
+    def _load_webhook(self, ctx, hook_id):
+        row = self.db.query_one("SELECT * FROM webhooks WHERE id = ? AND tenant_id = ?",
+                                (int(hook_id), self._tid(ctx)))
+        if row is None:
+            raise ApiError(404, "webhook not found")
+        return row
+
     def list_webhooks(self, ctx):
-        require_role(ctx.principal, "admin")
-        return 200, [self._webhook_dict(r) for r in self.db.query("SELECT * FROM webhooks ORDER BY id")]
+        self._require_admin(ctx)
+        rows = self.db.query("SELECT * FROM webhooks WHERE tenant_id = ? ORDER BY id", (self._tid(ctx),))
+        return 200, [self._webhook_dict(r) for r in rows]
 
     def create_webhook(self, ctx):
-        require_role(ctx.principal, "admin")
+        self._require_admin(ctx)
         body = _require_obj(ctx.body)
         unknown = set(body) - {"name", "type", "url", "secret", "events", "active", "soar_label", "verify_tls"}
         if unknown:
@@ -889,25 +1280,34 @@ class Api:
         active = _bool(body.get("active", True), "active")
         verify = _bool(body.get("verify_tls", True), "verify_tls")
         cur = self.db.execute(
-            "INSERT INTO webhooks(name, type, url, secret, events, active, soar_label, verify_tls, created_at) "
-            "VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO webhooks(name, type, url, secret, events, active, soar_label, verify_tls, created_at, "
+            "tenant_id) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (name, wtype, url, secret, json.dumps(sorted(set(events))), int(active), label, int(verify),
-             utcnow()),
+             utcnow(), self._tid(ctx)),
         )
-        return 201, self._webhook_dict(self.db.query_one("SELECT * FROM webhooks WHERE id = ?", (cur.lastrowid,)))
+        hook = self._webhook_dict(self.db.query_one("SELECT * FROM webhooks WHERE id = ?", (cur.lastrowid,)))
+        self._log(ctx, "webhook.create", object_type="webhook", object_id=str(hook["id"]),
+                  details={"type": wtype, "name": name, "url_host": _url_host(url), "events": hook["events"],
+                           "active": active, "verify_tls": verify})
+        return 201, hook
 
     def delete_webhook(self, ctx, hook_id):
-        require_role(ctx.principal, "admin")
-        cur = self.db.execute("DELETE FROM webhooks WHERE id = ?", (int(hook_id),))
-        if cur.rowcount == 0:
-            raise ApiError(404, "webhook not found")
+        self._require_admin(ctx)
+        hook = self._load_webhook(ctx, hook_id)
+        self.db.execute("DELETE FROM webhooks WHERE id = ?", (hook["id"],))
+        self._log(ctx, "webhook.delete", object_type="webhook", object_id=str(hook["id"]),
+                  details={"type": hook["type"], "name": hook["name"], "url_host": _url_host(hook["url"])})
         return 204, None
 
     def webhook_deliveries(self, ctx, hook_id):
-        require_role(ctx.principal, "admin")
-        if self.db.query_one("SELECT 1 FROM webhooks WHERE id = ?", (int(hook_id),)) is None:
-            raise ApiError(404, "webhook not found")
-        return 200, self.dispatcher.deliveries(int(hook_id))
+        self._require_admin(ctx)
+        hook = self._load_webhook(ctx, hook_id)
+        return 200, self.dispatcher.deliveries(hook["id"])
 
 
-__all__ = ["Api", "ApiError", "AuthError", "STATES", "TRANSITIONS"]
+def _seconds_between(start, end):
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return (datetime.datetime.strptime(end, fmt) - datetime.datetime.strptime(start, fmt)).total_seconds()
+
+
+__all__ = ["Api", "ApiError", "AuthError", "NullAudit", "STATES", "TRANSITIONS"]

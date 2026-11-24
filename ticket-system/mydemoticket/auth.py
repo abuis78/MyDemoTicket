@@ -3,13 +3,20 @@
 import datetime
 import hashlib
 import hmac
-import json
 import os
 import secrets
 
 from .db import utcnow
+from .tenants import (
+    default_tenant,
+    seed_custom_fields,
+    seed_teams,
+    tenant_by_id,
+    tenant_by_slug,
+)
 
-ROLES = ("admin", "agent", "requester", "integration")
+ROLES = ("platform_admin", "admin", "agent", "requester", "integration")
+ADMIN_ROLES = ("platform_admin", "admin")
 
 PBKDF2_ITERATIONS = 200_000
 SESSION_TTL_HOURS = 12
@@ -60,20 +67,31 @@ def new_token():
 
 # -- principal -------------------------------------------------------------
 class Principal:
-    """The authenticated caller of a request."""
+    """The authenticated caller of a request.
 
-    def __init__(self, user_row, teams, via, csrf_token=None):
+    ``tenant_id`` is the user's own tenant (None for platform_admin);
+    ``active_tenant_id`` is the tenant a platform_admin chose in the session.
+    """
+
+    def __init__(self, user_row, teams, via, csrf_token=None, active_tenant_id=None):
         self.id = user_row["id"]
         self.username = user_row["username"]
         self.display_name = user_row["display_name"]
         self.role = user_row["role"]
+        self.tenant_id = user_row["tenant_id"]
         self.teams = list(teams)
         self.via = via  # "token" or "session"
         self.csrf_token = csrf_token
+        self.active_tenant_id = active_tenant_id
 
     @property
     def is_admin(self):
-        return self.role == "admin"
+        """Tenant admin or platform admin (admin rights inside the request's tenant)."""
+        return self.role in ADMIN_ROLES
+
+    @property
+    def is_platform_admin(self):
+        return self.role == "platform_admin"
 
 
 def user_teams(db, user_id):
@@ -116,8 +134,8 @@ def principal_from_session(db, session):
     if not session:
         return None
     row = db.query_one(
-        "SELECT u.*, s.csrf_token, s.expires_at FROM sessions s JOIN users u ON u.id = s.user_id "
-        "WHERE s.session_hash = ?",
+        "SELECT u.*, s.csrf_token, s.expires_at, s.active_tenant_id FROM sessions s "
+        "JOIN users u ON u.id = s.user_id WHERE s.session_hash = ?",
         (hash_token(session),),
     )
     if row is None or not row["active"]:
@@ -125,7 +143,39 @@ def principal_from_session(db, session):
     if row["expires_at"] < utcnow():
         db.execute("DELETE FROM sessions WHERE session_hash = ?", (hash_token(session),))
         return None
-    return Principal(row, user_teams(db, row["id"]), "session", csrf_token=row["csrf_token"])
+    return Principal(row, user_teams(db, row["id"]), "session", csrf_token=row["csrf_token"],
+                     active_tenant_id=row["active_tenant_id"])
+
+
+def set_session_tenant(db, session, tenant_id):
+    db.execute("UPDATE sessions SET active_tenant_id = ? WHERE session_hash = ?", (tenant_id, hash_token(session)))
+
+
+def resolve_tenant(db, principal, header_value=None):
+    """Return the tenant row a request works in, or raise AuthError.
+
+    * normal users: their own tenant; a header naming another tenant -> 403
+      ``tenant mismatch``; an inactive tenant -> 403 ``tenant inactive``.
+    * platform_admin: header slug, else the tenant chosen in the session, else
+      the default tenant. An unknown slug -> 404 ``tenant not found``.
+    """
+    header_value = (header_value or "").strip()
+    if principal.is_platform_admin:
+        if header_value:
+            row = tenant_by_slug(db, header_value)
+            if row is None:
+                raise AuthError(404, "tenant not found")
+            return row
+        row = tenant_by_id(db, principal.active_tenant_id)
+        return row if row is not None else default_tenant(db)
+    row = tenant_by_id(db, principal.tenant_id)
+    if row is None:
+        raise AuthError(403, "user has no tenant")
+    if header_value and header_value != row["slug"]:
+        raise AuthError(403, "tenant mismatch")
+    if not row["active"]:
+        raise AuthError(403, "tenant inactive")
+    return row
 
 
 def delete_session(db, session):
@@ -148,14 +198,15 @@ def require_role(principal, *roles):
 
 
 def can_read_ticket(principal, ticket):
-    if principal.role in ("admin", "agent", "integration"):
+    """Same-tenant check is done by the caller (other tenants' tickets are 404)."""
+    if principal.role in ("platform_admin", "admin", "agent", "integration"):
         return True
     return ticket["caller"] == principal.username
 
 
 def can_modify_ticket(principal, ticket):
     """Whether the principal may change fields / add work notes on a ticket."""
-    if principal.role in ("admin", "integration"):
+    if principal.role in ("platform_admin", "admin", "integration"):
         return True
     if principal.role == "agent":
         group = ticket["assignment_group"]
@@ -183,19 +234,12 @@ SEED_USERS = [
     ("soar", "Splunk SOAR Integration", "integration", None),
 ]
 
-SEED_CUSTOM_FIELDS = [
-    ("mitre_technique", "MITRE ATT&CK Technique", "string", []),
-    ("affected_host", "Affected Host", "string", []),
-    ("risk_score", "Risk Score", "number", []),
-    ("incident_type", "Incident Type", "choice", ["malware", "phishing", "data_exfiltration", "other"]),
-]
-
-
-def _insert_user(db, username, display_name, role, password=None, email=""):
+def _insert_user(db, username, display_name, role, password=None, email="", tenant_id=None):
     cur = db.execute(
-        "INSERT INTO users(username, display_name, email, role, password_hash, active, created_at) "
-        "VALUES(?, ?, ?, ?, ?, 1, ?)",
-        (username, display_name, email, role, hash_password(password) if password else None, utcnow()),
+        "INSERT INTO users(username, display_name, email, role, password_hash, active, created_at, tenant_id) "
+        "VALUES(?, ?, ?, ?, ?, 1, ?, ?)",
+        (username, display_name, email, role, hash_password(password) if password else None, utcnow(),
+         tenant_id),
     )
     return cur.lastrowid
 
@@ -209,6 +253,9 @@ def _insert_token(db, user_id, token, name):
 
 def bootstrap(db, data_dir, seed=True, admin_password=None, admin_token=None):
     """Create the admin user (and optional demo seed) on first start.
+
+    ``admin`` is a platform_admin without tenant; the demo seed (teams, users,
+    custom fields) goes into the default tenant created by the migration.
 
     Credentials that were not provided via environment are generated randomly and
     written to <data_dir>/initial-credentials.txt with mode 0600 - never printed.
@@ -229,7 +276,7 @@ def bootstrap(db, data_dir, seed=True, admin_password=None, admin_token=None):
     admin_token = admin_token or new_token()
 
     with db.transaction():
-        admin_id = _insert_user(db, "admin", "Administrator", "admin", admin_password)
+        admin_id = _insert_user(db, "admin", "Administrator", "platform_admin", admin_password)
         _insert_token(db, admin_id, admin_token, "initial")
         if generated_admin_pw:
             lines.append("admin password: %s" % admin_password)
@@ -237,13 +284,12 @@ def bootstrap(db, data_dir, seed=True, admin_password=None, admin_token=None):
             lines.append("admin API token: %s" % admin_token)
 
         if seed:
-            team_ids = {}
-            for name, description in SEED_TEAMS:
-                cur = db.execute("INSERT INTO teams(name, description) VALUES(?, ?)", (name, description))
-                team_ids[name] = cur.lastrowid
+            tenant_id = default_tenant(db)["id"]
+            team_ids = seed_teams(db, tenant_id, SEED_TEAMS)
             for username, display, role, team in SEED_USERS:
                 password = secrets.token_urlsafe(18)
-                uid = _insert_user(db, username, display, role, password, "%s@example.invalid" % username)
+                uid = _insert_user(db, username, display, role, password, "%s@example.invalid" % username,
+                                   tenant_id)
                 lines.append("%s password: %s" % (username, password))
                 if role == "integration":
                     token = new_token()
@@ -253,20 +299,11 @@ def bootstrap(db, data_dir, seed=True, admin_password=None, admin_token=None):
                     db.execute(
                         "INSERT INTO team_members(team_id, user_id) VALUES(?, ?)", (team_ids[team], uid)
                     )
-            for name, label, ftype, choices in SEED_CUSTOM_FIELDS:
-                db.execute(
-                    "INSERT INTO custom_field_defs(name, label, type, choices, required, created_at) "
-                    "VALUES(?, ?, ?, ?, 0, ?)",
-                    (name, label, ftype, _json_list(choices), utcnow()),
-                )
+            seed_custom_fields(db, tenant_id)
 
     if not lines:
         return None
     return write_credentials(data_dir, lines)
-
-
-def _json_list(values):
-    return json.dumps(list(values))
 
 
 def write_credentials(data_dir, lines):

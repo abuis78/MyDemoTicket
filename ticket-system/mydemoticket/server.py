@@ -7,10 +7,12 @@ import os
 import re
 import sys
 import urllib.parse
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from . import __version__
 from .api import Api, ApiError
+from .audit import AuditLogger
 from .auth import (
     CSRF_HEADER,
     SESSION_COOKIE,
@@ -20,8 +22,10 @@ from .auth import (
     check_csrf,
     principal_from_session,
     principal_from_token,
+    resolve_tenant,
 )
 from .db import Database
+from .tenants import TENANT_HEADER, default_tenant, tenant_by_id, tenant_by_slug
 from .webhooks import WebhookDispatcher
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
@@ -33,7 +37,14 @@ ROUTES = [
     ("GET", r"/health", "health", False),
     ("POST", r"/auth/login", "_login", False),
     ("POST", r"/auth/logout", "_logout", True),
+    ("POST", r"/auth/tenant", "_switch_tenant", True),
     ("GET", r"/me", "me", True),
+    ("GET", r"/tenants", "list_tenants", True),
+    ("POST", r"/tenants", "create_tenant", True),
+    ("GET", r"/tenants/(?P<slug>[^/]+)", "get_tenant", True),
+    ("PATCH", r"/tenants/(?P<slug>[^/]+)", "patch_tenant", True),
+    ("GET", r"/reports/summary", "reports_summary", True),
+    ("GET", r"/audit/status", "audit_status", True),
     ("GET", r"/tickets", "list_tickets", True),
     ("POST", r"/tickets", "create_ticket", True),
     ("GET", r"/tickets/(?P<number>[^/]+)", "get_ticket", True),
@@ -73,28 +84,40 @@ SECURITY_HEADERS = {
 
 
 class RequestContext:
-    def __init__(self, principal, query, body, source, headers):
+    def __init__(self, principal, query, body, source, headers, tenant=None, request_id=None, ip=None,
+                 method=None, path=None):
         self.principal = principal
         self.query = query
         self.body = body
         self.source = source
         self.headers = headers
+        self.tenant = tenant          # tenants row the request works in (None before auth)
+        self.request_id = request_id
+        self.ip = ip
+        self.method = method
+        self.path = path
 
 
 class App:
     """Wires database, API and webhook dispatcher together."""
 
     def __init__(self, data_dir, seed=True, admin_password=None, admin_token=None,
-                 webhook_backoff=1.0, secure_cookies=False, quiet=False):
+                 webhook_backoff=1.0, secure_cookies=False, quiet=False, audit_logger=None):
         self.data_dir = os.path.abspath(os.path.expanduser(data_dir))
         os.makedirs(self.data_dir, mode=0o700, exist_ok=True)
         self.db = Database(os.path.join(self.data_dir, "mydemoticket.sqlite3"))
         self.credentials_file = bootstrap(
             self.db, self.data_dir, seed=seed, admin_password=admin_password, admin_token=admin_token
         )
-        self.api = Api(self.db, None)
+        # audit_logger is injectable for tests (any object with log/stats/start/stop)
+        self.audit = audit_logger if audit_logger is not None else AuditLogger.from_env(
+            self.data_dir, index_resolver=self.tenant_index
+        )
+        if hasattr(self.audit, "start"):
+            self.audit.start()
+        self.api = Api(self.db, None, audit=self.audit)
         self.dispatcher = WebhookDispatcher(
-            self.db, self.api.store_soar_container_id, backoff_seconds=webhook_backoff
+            self.db, self.api.store_soar_container_id, backoff_seconds=webhook_backoff, audit=self.audit
         )
         self.api.dispatcher = self.dispatcher
         self.secure_cookies = secure_cookies
@@ -108,11 +131,21 @@ class App:
         self.dispatcher.start()
         return self.httpd
 
+    def tenant_index(self, slug):
+        """index_resolver for the audit logger: tenants.splunk_index or None (= default index)."""
+        try:
+            row = tenant_by_slug(self.db, slug)
+        except Exception:  # database already closed during shutdown
+            return None
+        return row["splunk_index"] if row is not None and row["splunk_index"] else None
+
     def shutdown(self):
         if self.httpd is not None:
             self.httpd.shutdown()
             self.httpd.server_close()
         self.dispatcher.stop()
+        if hasattr(self.audit, "stop"):
+            self.audit.stop()
         self.db.close()
 
 
@@ -132,6 +165,7 @@ class Handler(BaseHTTPRequestHandler):
             raw = json.dumps(payload).encode("utf-8")
         raw = raw or b""
         self.send_response(status)
+        self.send_header("X-Request-Id", getattr(self, "_request_id", None) or str(uuid.uuid4()))
         if status != 204:
             self.send_header("Content-Type", content_type + ("; charset=utf-8" if "json" in content_type
                                                              or content_type.startswith("text/") else ""))
@@ -207,6 +241,34 @@ class Handler(BaseHTTPRequestHandler):
             check_csrf(principal, self.headers.get(CSRF_HEADER))
         return principal
 
+    def _client_ip(self):
+        peer = self.client_address[0] if self.client_address else None
+        forwarded = (self.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+        if forwarded and peer in ("127.0.0.1", "::1"):
+            return forwarded[:64]  # behind the local reverse proxy (Caddy)
+        return peer
+
+    def _denied_tenant(self, principal, ctx):
+        """Tenant slug for an access.denied event: request tenant, else the user's tenant."""
+        if ctx is not None and ctx.tenant is not None:
+            return ctx.tenant["slug"]
+        if principal is not None:
+            row = tenant_by_id(self.app.db, principal.tenant_id) if principal.tenant_id is not None \
+                else default_tenant(self.app.db)
+            if row is not None:
+                return row["slug"]
+        return "unknown"
+
+    def _log_denied(self, status, message, principal, ctx, source):
+        self.app.audit.log(
+            "access.denied", tenant=self._denied_tenant(principal, ctx),
+            actor=principal.username if principal is not None else None,
+            role=principal.role if principal is not None else None, outcome="denied",
+            source=source, ip=self._client_ip(), request_id=self._request_id,
+            details={"method": self.command, "path": urllib.parse.urlsplit(self.path).path[:512],
+                     "status": status, "reason": message},
+        )
+
     def _source(self, principal):
         value = (self.headers.get(SOURCE_HEADER) or "").strip()
         if value:
@@ -217,12 +279,14 @@ class Handler(BaseHTTPRequestHandler):
 
     # -- dispatch ---------------------------------------------------------
     def _handle(self):
+        self._request_id = str(uuid.uuid4())
         parsed = urllib.parse.urlsplit(self.path)
         path = parsed.path
         if not path.startswith("/api/"):
             if self.command in ("GET", "HEAD"):
                 return self._static(path)
             return self._error(405, "method not allowed")
+        principal, ctx = None, None
         try:
             match, allowed = None, []
             for method, regex, handler, auth in COMPILED:
@@ -238,32 +302,43 @@ class Handler(BaseHTTPRequestHandler):
                 return self._error(404, "not found")
             handler, auth, params = match
             params = {k: urllib.parse.unquote(v) for k, v in params.items()}
+            ctx = RequestContext(None, {}, {}, self._source(None), self.headers, request_id=self._request_id,
+                                 ip=self._client_ip(), method=self.command, path=path)
             principal = self._authenticate() if auth else None
-            body = self._read_body() if self.command in ("POST", "PATCH", "PUT") else {}
-            query = {k: v[-1] for k, v in urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items()}
-            ctx = RequestContext(principal, query, body, self._source(principal), self.headers)
+            ctx.principal = principal
+            ctx.source = self._source(principal)
+            if principal is not None:
+                ctx.tenant = resolve_tenant(self.app.db, principal, self.headers.get(TENANT_HEADER))
+            ctx.body = self._read_body() if self.command in ("POST", "PATCH", "PUT") else {}
+            ctx.query = {k: v[-1] for k, v in urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items()}
             if handler == "_login":
                 return self._login(ctx)
             if handler == "_logout":
                 return self._logout(ctx)
+            if handler == "_switch_tenant":
+                status, payload = self.app.api.switch_tenant(ctx, self._cookie(SESSION_COOKIE))
+                return self._send(status, payload)
             status, payload = getattr(self.app.api, handler)(ctx, **params)
             self._send(status, payload)
         except AuthError as exc:
+            if exc.status in (401, 403):
+                self._log_denied(exc.status, exc.message, principal, ctx, ctx.source if ctx else None)
             headers = {"WWW-Authenticate": 'Bearer realm="mydemoticket"'} if exc.status == 401 else None
             self._error(exc.status, exc.message, headers)
         except ApiError as exc:
+            if exc.status in (401, 403):
+                self._log_denied(exc.status, exc.message, principal, ctx, ctx.source if ctx else None)
             self._error(exc.status, exc.message)
         except Exception as exc:  # pragma: no cover - last resort
             sys.stderr.write("internal error: %r\n" % (exc,))
             self._error(500, "internal server error")
 
     def _login(self, ctx):
-        body = ctx.body if isinstance(ctx.body, dict) else {}
-        session, _csrf, user = self.app.api.login(body.get("username"), body.get("password"))
+        session, _csrf, user = self.app.api.login(ctx)
         self._send(200, user, headers={"Set-Cookie": self._session_cookie(session, SESSION_TTL_HOURS * 3600)})
 
     def _logout(self, ctx):
-        status, payload = self.app.api.logout(self._cookie(SESSION_COOKIE))
+        status, payload = self.app.api.logout(ctx, self._cookie(SESSION_COOKIE))
         self._send(status, payload, headers={"Set-Cookie": self._session_cookie("", 0)})
 
     def _static(self, path):

@@ -50,7 +50,8 @@ class TokenAuthTest(ServerTestCase):
         self.assertTrue(all(r["password_hash"].startswith("pbkdf2_sha256$") for r in users))
 
     def test_deactivated_user_401(self):
-        self.admin.post("/users", {"username": "temp1", "role": "agent"})
+        # platform_admin must name the tenant of a new user (multi-tenancy)
+        self.admin.post("/users", {"username": "temp1", "role": "agent", "tenant": "soc-games"})
         token = self.admin.post("/users/temp1/tokens", {}).json["token"]
         self.assertEqual(Client(self.port, token).get("/me").status, 200)
         self.admin.patch("/users/temp1", {"active": False})
@@ -152,15 +153,17 @@ class RoleTest(ServerTestCase):
 class AdminEndpointTest(ServerTestCase):
     def test_users_and_teams(self):
         resp = self.admin.post("/users", {"username": "newagent", "role": "agent", "display_name": "New Agent",
-                                          "password": "longenough1", "teams": ["IT Ops"]})
+                                          "password": "longenough1", "teams": ["IT Ops"], "tenant": "soc-games"})
         self.assertEqual(resp.status, 201, resp)
         self.assertEqual(resp.json["teams"], ["IT Ops"])
         self.assertNotIn("password", resp.json)
-        self.assertEqual(self.admin.post("/users", {"username": "newagent", "role": "agent"}).status, 409)
-        self.assertEqual(self.admin.post("/users", {"username": "bad user", "role": "agent"}).status, 422)
+        self.assertEqual(self.admin.post("/users", {"username": "newagent", "role": "agent",
+                                                    "tenant": "soc-games"}).status, 409)
+        self.assertEqual(self.admin.post("/users", {"username": "bad user", "role": "agent",
+                                                    "tenant": "soc-games"}).status, 422)
         self.assertEqual(self.admin.post("/users", {"username": "x2", "role": "god"}).status, 422)
-        self.assertEqual(self.admin.post("/users", {"username": "x3", "role": "agent", "password": "short"}).status,
-                         422)
+        self.assertEqual(self.admin.post("/users", {"username": "x3", "role": "agent", "password": "short",
+                                                    "tenant": "soc-games"}).status, 422)
         resp = self.admin.post("/teams", {"name": "CSIRT", "description": "Incident team"})
         self.assertEqual(resp.status, 201)
         resp = self.admin.post("/teams/CSIRT/members", {"username": "newagent"})
@@ -178,7 +181,9 @@ class AdminEndpointTest(ServerTestCase):
 
     def test_seed_users(self):
         users = {u["username"]: u for u in self.admin.get("/users").json}
-        self.assertEqual(users["admin"]["role"], "admin")
+        self.assertEqual(users["admin"]["role"], "platform_admin")  # bootstrap admin is platform-wide
+        self.assertIsNone(users["admin"]["tenant"])
+        self.assertEqual(users["analyst1"]["tenant"], "soc-games")
         self.assertEqual(users["analyst1"]["role"], "agent")
         self.assertEqual(users["analyst2"]["teams"], ["SOC L2"])
         self.assertEqual(users["requester1"]["role"], "requester")
