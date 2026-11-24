@@ -8,7 +8,9 @@ Splunk configuration and dashboards: [`splunk/`](../splunk/).
 
 ## Event schema
 
-One JSON object per event (sourcetype `mydemoticket:audit`):
+One JSON object per event (sourcetype `mydemoticket:audit`). The local file contains all
+fields below. In the HEC payload `tenant` is sent **only** as indexed field
+(`fields.tenant`), not in the event body, see [Tenant separation](#tenant-separation-in-splunk).
 
 | Field | Type | Meaning |
 |---|---|---|
@@ -73,7 +75,7 @@ in `stats()` or in error messages.
 ```python
 from mydemoticket.audit import AuditLogger
 
-audit = AuditLogger.from_env(data_dir, index_resolver=lambda slug: tenant_index.get(slug))
+audit = AuditLogger.from_env(data_dir)   # all tenants -> index from MYDEMOTICKET_HEC_INDEX
 audit.start()
 audit.log("ticket.create", tenant="soc-games", actor="alice", role="agent",
           object_type="ticket", object_id="INC0001001", source="api",
@@ -96,7 +98,8 @@ Always written, independent of HEC:
 - Rotation at 10 MB, 5 generations (`audit.log.1` ... `audit.log.5`, `.1` is the newest)
 
 If HEC is down for a long time, the file still holds the full trail. It can be indexed later
-with a Universal Forwarder (`monitor` stanza in
+with a Universal Forwarder (events indexed this way carry `tenant` only in the JSON, not as
+indexed field, so tenant roles do not see them; only administrators do) (`monitor` stanza in
 [`splunk/inputs.conf.example`](../splunk/inputs.conf.example)) or inspected with `jq`:
 
 ```bash
@@ -105,14 +108,13 @@ jq -c 'select(.tenant=="soc-games" and .outcome!="success")' /var/lib/mydemotick
 
 ## Setting up HEC
 
-1. Create the indexes (one per tenant plus a fallback), see
-   [`splunk/indexes.conf.example`](../splunk/indexes.conf.example). Convention:
-   `mdt_<tenant slug with "-" replaced by "_">`, e.g. `mdt_soc_games`, `mdt_usa_demo`.
+1. Create **one** index `mydemoticket` for all tenants, see
+   [`splunk/indexes.conf.example`](../splunk/indexes.conf.example).
 2. Install [`splunk/props.conf`](../splunk/props.conf) and [`splunk/fields.conf`](../splunk/fields.conf)
    in an app on indexers and search heads.
 3. Create a HEC token: *Settings > Data inputs > HTTP Event Collector > New Token*,
-   source type `mydemoticket:audit`, allowed indexes = all `mdt_*` indexes, default index
-   `mdt_default`, indexer acknowledgement off. Equivalent stanza:
+   source type `mydemoticket:audit`, allowed index and default index `mydemoticket`,
+   indexer acknowledgement off. Equivalent stanza:
    [`splunk/inputs.conf.example`](../splunk/inputs.conf.example).
    Make sure HEC is enabled (*Global Settings*).
 4. Configure the ticket system through environment variables:
@@ -122,7 +124,7 @@ jq -c 'select(.tenant=="soc-games" and .outcome!="success")' /var/lib/mydemotick
    | `MYDEMOTICKET_HEC_URL` | Base URL, e.g. `https://splunk.example.com:8088`. `/services/collector/event` is appended unless the URL already contains `/services/collector` | unset = HEC off |
    | `MYDEMOTICKET_HEC_TOKEN` | HEC token | unset = HEC off |
    | `MYDEMOTICKET_HEC_VERIFY_TLS` | `1` verify TLS certificate, `0` skip (lab only) | `1` |
-   | `MYDEMOTICKET_HEC_INDEX` | Default index when the tenant has no own index | unset = token default |
+   | `MYDEMOTICKET_HEC_INDEX` | Target index, `mydemoticket` | unset = token default index |
 
    Never put the token into the repo. On AWS store it in SSM Parameter Store as a
    `SecureString` and render it into the service's environment file at deploy time, e.g.:
@@ -140,13 +142,13 @@ jq -c 'select(.tenant=="soc-games" and .outcome!="success")' /var/lib/mydemotick
    curl -sS "$MYDEMOTICKET_HEC_URL/services/collector/health"
    ```
 
-   then perform a login and search `index=mdt_* sourcetype=mydemoticket:audit`.
+   then perform a login and search `index=mydemoticket sourcetype=mydemoticket:audit`.
 
 ### Delivery behaviour
 
 - Background thread, batches of up to 50 events or every 2 seconds.
 - HEC event envelope per event:
-  `{"time": <epoch>, "host": <hostname>, "source": "mydemoticket", "sourcetype": "mydemoticket:audit", "index": <tenant index or default, omitted if none>, "event": {...}, "fields": {"tenant": "<slug>"}}`
+  `{"time": <epoch>, "host": <hostname>, "source": "mydemoticket", "sourcetype": "mydemoticket:audit", "index": "mydemoticket" (omitted if unset), "event": {<all fields except tenant>}, "fields": {"tenant": "<slug>"}}`
 - Header `Authorization: Splunk <token>`.
 - Network errors, HTTP 5xx and 429: retry with exponential backoff 1, 2, 4, ... up to 60 s.
 - Other 4xx (bad token, unknown index, malformed): the batch is counted as `failed`,
@@ -154,21 +156,26 @@ jq -c 'select(.tenant=="soc-games" and .outcome!="success")' /var/lib/mydemotick
 
 ## Tenant separation in Splunk
 
-Two layers keep tenants apart:
+All tenants share **one index, `mydemoticket`**. Separation is done exclusively through the
+indexed field `tenant`:
 
-1. **Index per tenant (hard separation).** The app passes `index_resolver(tenant_slug)`,
-   so each event lands in its tenant's index. In
-   [`splunk/authorize.conf.example`](../splunk/authorize.conf.example) each tenant has a role
-   whose `srchIndexesAllowed` contains only its own index. Splunk enforces this for every
-   search, dashboard and API call. Tenant roles must not inherit from roles with wider
-   index access.
-2. **Indexed field `tenant`.** Every HEC event carries `fields.tenant`, which is an
-   index-time field (`fields.conf`: `INDEXED = true`). Searching `tenant::soc-games` or
-   `tenant=soc-games` is fast and works with `tstats`; the example roles also set
-   `srchFilter = tenant::<slug>` as a second safeguard, e.g. if several tenants share the
-   fallback index.
+1. **Indexed field `tenant`.** Every HEC event carries `fields.tenant`, an index-time field
+   ([`splunk/fields.conf`](../splunk/fields.conf): `INDEXED = true`). It is fast
+   (`tenant::soc-games`, `tstats ... by tenant`) and cannot be changed at search time.
+2. **One role per tenant with `srchFilter`.** In
+   [`splunk/authorize.conf.example`](../splunk/authorize.conf.example) each tenant role has
+   `srchIndexesAllowed = mydemoticket` and `srchFilter = tenant::<slug>`. Splunk adds the
+   filter to every search, dashboard and REST call of that role. Tenant roles must not
+   inherit from roles with broader access (admin, power): inherited search filters are
+   OR-combined and would widen access.
 
-The dashboards filter every search on `tenant=$tenant$`; this is for convenience, not for
+**Avoiding duplicates:** `tenant` is deliberately *not* repeated inside the JSON event body.
+With `KV_MODE = json` Splunk would otherwise extract it a second time at search time and
+report a multivalue field `tenant=["soc-games","soc-games"]`, which breaks `stats by tenant`
+and equality filters. The local `audit.log` keeps `tenant` in the JSON because it has no
+indexed field.
+
+The dashboards filter every search on `tenant::$tenant$`; this is for convenience, not for
 security. Security comes from the roles.
 
 ## Dashboards
@@ -182,34 +189,34 @@ Simple XML, import via *Dashboards > Create New Dashboard > Source* or copy into
 - [`splunk/dashboards/mydemoticket_report.xml`](../splunk/dashboards/mydemoticket_report.xml):
   tickets created/resolved per day, state distribution, created/resolved per tenant, MTTR.
 
-Both search `(index=mdt_* OR index=main) sourcetype="mydemoticket:audit"`; adapt the index
-part if you use other index names.
+Both search `index=mydemoticket sourcetype="mydemoticket:audit" tenant::$tenant$`; the
+tenant dropdown comes from `| tstats count where index=mydemoticket by tenant`.
 
 ## Example searches
 
 Failed logins per tenant and IP in the last 24 h:
 
 ```
-index=mdt_* sourcetype=mydemoticket:audit action=auth.login outcome=failure earliest=-24h
+index=mydemoticket sourcetype=mydemoticket:audit action=auth.login outcome=failure earliest=-24h
 | stats count by tenant ip actor | sort - count
 ```
 
 Everything one user did:
 
 ```
-index=mdt_* sourcetype=mydemoticket:audit actor=alice | table _time tenant action outcome object_id
+index=mydemoticket sourcetype=mydemoticket:audit actor=alice | table _time tenant action outcome object_id
 ```
 
 Fast event counts per tenant via the indexed field:
 
 ```
-| tstats count where index=mdt_* sourcetype=mydemoticket:audit by tenant _time span=1h
+| tstats count where index=mydemoticket sourcetype=mydemoticket:audit by tenant _time span=1h
 ```
 
 Webhook delivery failure rate:
 
 ```
-index=mdt_* sourcetype=mydemoticket:audit action=webhook.delivery
+index=mydemoticket sourcetype=mydemoticket:audit action=webhook.delivery
 | stats count(eval(outcome="success")) as ok count as total by tenant
 | eval failure_rate=round(100*(total-ok)/total,1)
 ```
@@ -217,14 +224,14 @@ index=mdt_* sourcetype=mydemoticket:audit action=webhook.delivery
 History of one ticket:
 
 ```
-index=mdt_* sourcetype=mydemoticket:audit object_type=ticket object_id=INC0001001
+index=mydemoticket sourcetype=mydemoticket:audit object_type=ticket object_id=INC0001001
 | table _time action actor outcome details.from details.to
 ```
 
 Mean time to resolve per tenant:
 
 ```
-index=mdt_* sourcetype=mydemoticket:audit (action=ticket.create OR action=ticket.state_change)
+index=mydemoticket sourcetype=mydemoticket:audit (action=ticket.create OR action=ticket.state_change)
 | eval c=if(action=="ticket.create",_time,null()), r=if(in('details.to',"resolved","closed"),_time,null())
 | stats min(c) as c min(r) as r by tenant object_id
 | where isnotnull(c) AND isnotnull(r)
