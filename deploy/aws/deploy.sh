@@ -183,7 +183,7 @@ put_param() { # name type value  (value via temp JSON file, never on the command
   local f; f=$(mktemp); chmod 600 "$f"
   python3 -c 'import json,sys; print(json.dumps({"Name":sys.argv[1],"Type":sys.argv[2],"Value":sys.stdin.read().rstrip("\n"),"Overwrite":True}))' \
     "/$NAME/$1" "$2" <<<"$3" >"$f"
-  aws ssm put-parameter --cli-input-json "file://$f" >/dev/null
+  aws ssm put-parameter --cli-input-json "file://$f" >/dev/null || { rm -f "$f"; return 1; }  # never leave the secret file behind
   rm -f "$f"
 }
 say "write SSM parameters /$NAME/*"
