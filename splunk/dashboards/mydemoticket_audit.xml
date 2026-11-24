@@ -2,7 +2,7 @@
   <label>MyDemoTicket - Audit</label>
   <description>Audit trail of the MyDemoTicket ticket system (sourcetype mydemoticket:audit). Every search is filtered on the selected tenant; tenant roles only see their own index anyway.</description>
   <search id="base">
-    <query><![CDATA[(index=mdt_* OR index=main) sourcetype="mydemoticket:audit" tenant="$tenant$"
+    <query><![CDATA[index=mydemoticket sourcetype="mydemoticket:audit" tenant::$tenant$
 | fields _time tenant action actor role outcome object_type object_id source ip request_id details.*]]></query>
     <earliest>$time.earliest$</earliest>
     <latest>$time.latest$</latest>
@@ -16,7 +16,7 @@
       <fieldForLabel>tenant</fieldForLabel>
       <fieldForValue>tenant</fieldForValue>
       <search>
-        <query><![CDATA[(index=mdt_* OR index=main) sourcetype="mydemoticket:audit" | stats count by tenant | sort tenant]]></query>
+        <query><![CDATA[| tstats count where index=mydemoticket sourcetype="mydemoticket:audit" by tenant | sort tenant]]></query>
         <earliest>-30d@d</earliest>
         <latest>now</latest>
       </search>

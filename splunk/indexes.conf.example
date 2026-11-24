@@ -1,27 +1,12 @@
-# Example: one index per MyDemoTicket tenant (hard separation).
+# Example: ONE index for all MyDemoTicket tenants.
+# Tenants are separated by the indexed field "tenant" (see fields.conf) and by
+# per-tenant roles with srchFilter = tenant::<slug> (see authorize.conf.example).
 # Copy to $SPLUNK_HOME/etc/apps/<your_app>/local/indexes.conf on the indexers and
-# adapt names / retention. Index names must match what the ticket system's
-# index_resolver returns per tenant (convention: mdt_<tenant_slug with _>).
+# adapt retention / size.
 
-[mdt_soc_games]
-homePath   = $SPLUNK_DB/mdt_soc_games/db
-coldPath   = $SPLUNK_DB/mdt_soc_games/colddb
-thawedPath = $SPLUNK_DB/mdt_soc_games/thaweddb
+[mydemoticket]
+homePath   = $SPLUNK_DB/mydemoticket/db
+coldPath   = $SPLUNK_DB/mydemoticket/colddb
+thawedPath = $SPLUNK_DB/mydemoticket/thaweddb
 frozenTimePeriodInSecs = 31536000
-maxTotalDataSizeMB = 5000
-
-[mdt_usa_demo]
-homePath   = $SPLUNK_DB/mdt_usa_demo/db
-coldPath   = $SPLUNK_DB/mdt_usa_demo/colddb
-thawedPath = $SPLUNK_DB/mdt_usa_demo/thaweddb
-frozenTimePeriodInSecs = 31536000
-maxTotalDataSizeMB = 5000
-
-# Fallback for events whose tenant has no dedicated index (MYDEMOTICKET_HEC_INDEX).
-# Only administrators should be able to search it.
-[mdt_default]
-homePath   = $SPLUNK_DB/mdt_default/db
-coldPath   = $SPLUNK_DB/mdt_default/colddb
-thawedPath = $SPLUNK_DB/mdt_default/thaweddb
-frozenTimePeriodInSecs = 31536000
-maxTotalDataSizeMB = 2000
+maxTotalDataSizeMB = 10000
