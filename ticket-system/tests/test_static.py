@@ -79,6 +79,15 @@ class StaticFilesTest(ServerTestCase):
         self.assertIsNone(re.search(r"set(Timeout|Interval)\(\s*[\"']", js))
         self.assertNotRegex(js, r"https?://(?!soar\.example\.invalid)")
 
+    def test_journal_shows_author_via_actor(self):
+        js = self.text("/static/app.js")
+        self.assertIn('e.author ? e.author + " (via " + e.actor + ")" : e.actor', js)
+        # the comment form never sends an author: UI users are real users
+        self.assertIn("{ body: text.value, type: kind })", js)
+        self.assertNotRegex(js, r"author:\s")
+        css = self.text("/static/app.css")
+        self.assertRegex(css, r"\.journal \.body \{[^}]*white-space: pre-wrap")
+
     def test_tenant_errors_have_readable_texts(self):
         js = self.text("/static/app.js")
         for message in ("tenant mismatch", "tenant inactive", "tenant not found"):

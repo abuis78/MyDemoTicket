@@ -3,6 +3,7 @@
 import datetime
 import json
 import re
+import unicodedata
 import urllib.parse
 
 from . import __version__
@@ -62,6 +63,8 @@ REQUESTER_CREATE_FIELDS = ("short_description", "description", "priority", "cate
 
 FIELD_NAME_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
+EXTERNAL_REF_PREFIX = "external_ref."
+MAX_AUTHOR = 64
 MAX_TEXT = 100_000
 MAX_LIMIT = 500
 
@@ -107,6 +110,44 @@ def _priority(value):
     if value not in PRIORITIES:
         raise ApiError(422, "'priority' must be 1, 2, 3 or 4")
     return value
+
+
+def _author(value):
+    """Validate the optional comment author: string, trimmed 1..64 chars, no control chars."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ApiError(422, "'author' must be a string")
+    value = value.strip()
+    if not value or len(value) > MAX_AUTHOR:
+        raise ApiError(422, "'author' must be 1..%d characters" % MAX_AUTHOR)
+    if any(unicodedata.category(c) == "Cc" for c in value):
+        raise ApiError(422, "'author' must not contain control characters")
+    return value
+
+
+# Stored external_refs scalar rendered as text: strings as-is, numbers in their
+# SQLite text form (1133 -> '1133'), booleans as JSON ('true'/'false').
+_REF_TEXT_SQL = (
+    "(CASE json_type(external_refs, ?) WHEN 'true' THEN 'true' WHEN 'false' THEN 'false' "
+    "WHEN 'null' THEN NULL WHEN 'object' THEN NULL WHEN 'array' THEN NULL "
+    "ELSE CAST(json_extract(external_refs, ?) AS TEXT) END)"
+)
+
+
+def _external_ref_filters(query):
+    """Translate ``external_ref.<key>=<value>`` query parameters into SQL (AND)."""
+    where, params = [], []
+    for name in sorted(query):
+        if not name.startswith(EXTERNAL_REF_PREFIX):
+            continue
+        key = name[len(EXTERNAL_REF_PREFIX):]
+        if not FIELD_NAME_RE.match(key):
+            raise ApiError(422, "invalid external_ref filter key (allowed: [a-z0-9_]{1,64})")
+        path = '$."%s"' % key
+        where.append(_REF_TEXT_SQL + " = ?")
+        params.extend([path, path, query[name]])
+    return where, params
 
 
 def _bool(value, field):
@@ -569,6 +610,9 @@ class Api:
                 "OR description LIKE ? ESCAPE '\\')"
             )
             params.extend([like, like, like])
+        ref_where, ref_params = _external_ref_filters(q)
+        where.extend(ref_where)
+        params.extend(ref_params)
         try:
             limit = int(q.get("limit", 50))
             offset = int(q.get("offset", 0))
@@ -781,6 +825,7 @@ class Api:
             "id": row["id"],
             "type": row["type"],
             "actor": row["actor"],
+            "author": row["author"],
             "source": row["source"],
             "at": row["at"],
         }
@@ -807,7 +852,7 @@ class Api:
         kind = body.get("type", "comment")
         if kind not in ("comment", "work_note"):
             raise ApiError(422, "'type' must be 'comment' or 'work_note'")
-        unknown = set(body) - {"body", "type"}
+        unknown = set(body) - {"body", "type", "author"}
         if unknown:
             raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])
         if p.role == "requester":
@@ -816,12 +861,13 @@ class Api:
         elif not can_modify_ticket(p, row):
             raise _forbidden("ticket is assigned to another team or user")
         text = _text(body.get("body"), "body", required=True)
+        author = _author(body.get("author"))
         now = utcnow()
         with self.db.transaction():
             cur = self.db.execute(
-                "INSERT INTO journal(ticket_id, tenant_id, type, body, actor, source, at) "
-                "VALUES(?, ?, ?, ?, ?, ?, ?)",
-                (row["id"], tid, kind, text, p.username, ctx.source, now),
+                "INSERT INTO journal(ticket_id, tenant_id, type, body, actor, author, source, at) "
+                "VALUES(?, ?, ?, ?, ?, ?, ?, ?)",
+                (row["id"], tid, kind, text, p.username, author, ctx.source, now),
             )
             self.db.execute("UPDATE tickets SET updated_at = ? WHERE id = ?", (now, row["id"]))
             entry = self._journal_dict(
@@ -829,7 +875,7 @@ class Api:
             )
         ticket = self._ticket_dict(self._load_ticket(row["number"], tid))
         self._log(ctx, "ticket.comment", object_type="ticket", object_id=row["number"],
-                  details={"type": kind, "kind": kind, "journal_id": entry["id"]})
+                  details={"type": kind, "kind": kind, "journal_id": entry["id"], "author": author})
         self.dispatcher.emit("ticket.commented", ticket, p.username, ctx.source, comment=entry,
                              tenant=ctx.tenant, request_id=ctx.request_id)
         return 201, entry
