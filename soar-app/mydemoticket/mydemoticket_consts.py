@@ -1,5 +1,7 @@
 """Constants for the MyDemoTicket SOAR app."""
 
+import re
+
 API_PREFIX = "/api/v1"
 SOURCE_HEADER = "X-MyDemoTicket-Source"
 DEFAULT_TIMEOUT = 30
@@ -21,6 +23,9 @@ STATE_LAST_POLL = "last_poll"
 POLL_PAGE_SIZE = 100
 DEFAULT_POLL_NOW_COUNT = 10
 DEFAULT_LIST_LIMIT = 100
+# list tickets: external_ref.<key>=<value> filter of GET /tickets
+EXTERNAL_REF_PREFIX = "external_ref."
+EXTERNAL_REF_KEY_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 # Fields the PATCH /tickets/{number} endpoint accepts as plain values

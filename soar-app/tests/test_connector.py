@@ -185,6 +185,21 @@ class TestAddComment(ConnectorTestBase):
         _, r = self.run_action("add_comment", {"number": "TKT0001001", "body": "hi", "type": "email"})
         self.assertFalse(r.get_status())
 
+    def test_author_is_sent_and_returned(self):
+        _, r = self.run_action("add_comment", {"number": "TKT0001001", "body": "hi", "author": "jdoe"})
+        self.assertTrue(r.get_status(), r.get_message())
+        self.assertEqual(self.last_request()[4], {"body": "hi", "type": "comment", "author": "jdoe"})
+        self.assertEqual((r.get_data()[0]["author"], r.get_data()[0]["actor"]), ("jdoe", "soar-integration"))
+
+    def test_empty_author_is_omitted(self):
+        self.run_action("add_comment", {"number": "TKT0001001", "body": "hi", "author": ""})
+        self.assertNotIn("author", self.last_request()[4])
+
+    def test_invalid_author_422(self):
+        _, r = self.run_action("add_comment", {"number": "TKT0001001", "body": "hi", "author": "x" * 65})
+        self.assertFalse(r.get_status())
+        self.assertIn("HTTP 422", r.get_message())
+
     def test_not_found_404(self):
         _, r = self.run_action("add_comment", {"number": "TKT0000000", "body": "hi"})
         self.assertFalse(r.get_status())
@@ -198,6 +213,33 @@ class TestListTickets(ConnectorTestBase):
         self.assertEqual(len(r.get_data()), 1)
         self.assertEqual(r.get_summary(), {"total": 1, "returned": 1})
         self.assertEqual(self.last_request()[2], {"state": "in_progress", "limit": "10", "offset": "0"})
+
+    def test_external_ref_filter(self):
+        self.api.add_ticket(short_description="numeric ref", external_refs={"es_finding_id": 1133})
+        _, r = self.run_action("list_tickets", {"external_ref_key": "es_finding_id", "external_ref_value": "abc-123"})
+        self.assertTrue(r.get_status(), r.get_message())
+        self.assertEqual([t["number"] for t in r.get_data()], ["TKT0001002"])
+        self.assertEqual(self.last_request()[2],
+                         {"external_ref.es_finding_id": "abc-123", "limit": "100", "offset": "0"})
+        _, r = self.run_action("list_tickets", {"external_ref_key": "es_finding_id", "external_ref_value": 1133,
+                                                "state": "new"})
+        self.assertEqual([t["short_description"] for t in r.get_data()], ["numeric ref"])
+        self.assertEqual(r.get_summary(), {"total": 1, "returned": 1})
+
+    def test_external_ref_needs_key_and_value(self):
+        for param in ({"external_ref_key": "es_finding_id"}, {"external_ref_value": "abc-123"},
+                      {"external_ref_key": "es_finding_id", "external_ref_value": ""}):
+            with self.subTest(param=param):
+                before = len(self.api.requests)
+                _, r = self.run_action("list_tickets", param)
+                self.assertFalse(r.get_status())
+                self.assertIn("together", r.get_message())
+                self.assertEqual(len(self.api.requests), before)
+
+    def test_external_ref_invalid_key(self):
+        _, r = self.run_action("list_tickets", {"external_ref_key": "Bad-Key", "external_ref_value": "1"})
+        self.assertFalse(r.get_status())
+        self.assertIn("[a-z0-9_]", r.get_message())
 
     def test_bad_limit(self):
         _, r = self.run_action("list_tickets", {"limit": "abc"})

@@ -45,9 +45,9 @@ All requests use a 30 s timeout. HTTP errors are returned as failed action with
 | get ticket | `number`* | ticket |
 | update ticket | `number`*, all ticket fields optional, `custom_fields` (JSON, merged), `es_finding_id` (merged into `external_refs`) | ticket |
 | set state | `number`*, `state`* (`new`, `in_progress`, `on_hold`, `resolved`, `closed`, `cancelled`), `close_notes` | ticket |
-| add comment | `number`*, `body`*, `type` (`comment` \| `work_note`, default `comment`) | journal entry |
-| list tickets | `state`, `assignment_group`, `assigned_to`, `updated_since` (ISO-8601 UTC `Z`), `q`, `limit` (default 100), `offset` | tickets, `summary.total`, `summary.returned` |
-| get journal | `number`* | journal entries, `summary.entries` |
+| add comment | `number`*, `body`*, `type` (`comment` \| `work_note`, default `comment`), `author` (1–64 chars, e.g. the ES analyst) | journal entry (`actor` = token user, `author` or null) |
+| list tickets | `state`, `assignment_group`, `assigned_to`, `updated_since` (ISO-8601 UTC `Z`), `q`, `external_ref_key` + `external_ref_value` (both or neither), `limit` (default 100), `offset` | tickets, `summary.total`, `summary.returned` |
+| get journal | `number`* | journal entries (incl. `author`), `summary.entries` |
 | list custom fields | – | definitions (`name`, `label`, `type`, `choices`, `required`) |
 | on poll | `container_count` (Poll Now) | containers + artifacts |
 
@@ -55,6 +55,15 @@ Ticket data paths (`action_result.data.*.`): `number`, `id`, `short_description`
 `state`, `priority`, `assignment_group`, `assigned_to`, `caller`, `category`,
 `external_refs.soar_container_id`, `external_refs.es_finding_id`, `created_at`, `updated_at`,
 `resolved_at`, `close_notes`. The full list is in `mydemoticket.json`.
+
+**Find before create (idempotent playbooks):** `list tickets` with `external_ref_key = es_finding_id`
+and `external_ref_value = <finding id>` sends `external_ref.es_finding_id=<id>` and returns exactly
+the tickets that carry this reference (stored numbers match their text, `1133` = `"1133"`). Create a
+ticket only when `summary.total` is 0.
+
+**Comment author:** `add comment` with `author` keeps the API user as `actor` (e.g. `soar`) and
+stores the real person separately; the ticket UI shows `jdoe (via soar)`. Pushed SOAR artifacts of
+`ticket.commented` carry it as CEF `commentAuthor`.
 
 ## Sync concept
 Two channels keep SOAR and the ticket system in sync:
@@ -104,9 +113,14 @@ phenv python3 mydemoticket_connector.py /tmp/test_get_ticket.json
 | `HTTP 401: ...` | Token wrong or expired – check `api_token` |
 | `API token role '...' is not allowed` | Use a token of an integration/agent/admin user |
 | `HTTP 409: ...` | State transition not allowed by the ticket workflow |
-| `HTTP 422: ...` | Validation error (e.g. missing short description) |
+| `HTTP 422: ...` | Validation error (e.g. missing short description, `author` longer than 64 chars) |
+| `Parameters external_ref_key and external_ref_value must be given together` | Set both or none |
+| `Parameter external_ref_key must match [a-z0-9_]{1,64}` | Use a lower-case key such as `es_finding_id` |
 | `Parameter custom_fields is not valid JSON` | Pass a JSON object string, e.g. `{"k": "v"}` |
 | `Connection error` / `Timeout after 30 s` | Network, DNS, proxy or TLS – check `base_url`, `verify_server_cert` |
 
 ## 10. Changelog
+- 1.1.0 (2026-11-24): `add comment` optional `author`; `list tickets` optional `external_ref_key` /
+  `external_ref_value` (needs ticket system with `external_ref.<key>` filter); data paths `author`,
+  `actor`. Not yet tested on a real SOAR instance.
 - 1.0.0 (2026-11-24): First version – 10 actions incl. on poll. Not yet tested on a real SOAR instance.

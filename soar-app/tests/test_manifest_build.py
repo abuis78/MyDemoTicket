@@ -37,6 +37,7 @@ class TestManifest(unittest.TestCase):
         self.assertEqual(a["min_phantom_version"], "6.0.0")
         self.assertEqual(a["main_module"], "mydemoticket_connector.py")
         self.assertEqual(a["python_version"], "3.13")
+        self.assertEqual(a["app_version"], "1.1.0")
         for key in ("main_module", "logo", "logo_dark"):
             self.assertTrue(os.path.isfile(os.path.join(support.APP_DIR, a[key])), key)
 
@@ -70,6 +71,17 @@ class TestManifest(unittest.TestCase):
         types = {a["identifier"]: a["type"] for a in self.app["actions"]}
         self.assertEqual(types["test_connectivity"], "test")
         self.assertEqual(types["on_poll"], "ingest")
+
+    def test_new_parameters_1_1_0(self):
+        acts = {a["identifier"]: a for a in self.app["actions"]}
+        author = acts["add_comment"]["parameters"]["author"]
+        self.assertEqual((author["data_type"], author["required"]), ("string", False))
+        lt = acts["list_tickets"]["parameters"]
+        for name in ("external_ref_key", "external_ref_value"):
+            self.assertEqual((lt[name]["data_type"], lt[name]["required"]), ("string", False), name)
+        paths = {a: [o["data_path"] for o in acts[a]["output"]] for a in ("add_comment", "get_journal")}
+        self.assertIn("action_result.data.*.author", paths["add_comment"])
+        self.assertIn("action_result.data.*.author", paths["get_journal"])
 
     def test_no_secrets_in_manifest(self):
         self.assertNotIn("default", self.app["configuration"]["api_token"])

@@ -6,7 +6,7 @@
     "package_name": "phantom_mydemoticket",
     "type": "ticketing",
     "license": "Copyright (c) 2026 SOC Games Demo",
-    "app_version": "1.0.0",
+    "app_version": "1.1.0",
     "product_vendor": "SOC Games Demo",
     "product_name": "MyDemoTicket",
     "product_version_regex": ".*",
@@ -902,6 +902,12 @@
                         "work_note"
                     ],
                     "default": "comment"
+                },
+                "author": {
+                    "description": "Real author shown in the ticket journal as '<author> (via <api user>)', e.g. the ES analyst (1-64 chars, optional)",
+                    "data_type": "string",
+                    "required": false,
+                    "order": 3
                 }
             },
             "output": [
@@ -929,6 +935,10 @@
                     "data_type": "string"
                 },
                 {
+                    "data_path": "action_result.parameter.author",
+                    "data_type": "string"
+                },
+                {
                     "data_path": "action_result.data.*.id",
                     "data_type": "string",
                     "column_name": "ID",
@@ -951,6 +961,18 @@
                     "data_type": "string",
                     "column_name": "At",
                     "column_order": 3
+                },
+                {
+                    "data_path": "action_result.data.*.actor",
+                    "data_type": "string",
+                    "column_name": "Actor",
+                    "column_order": 4
+                },
+                {
+                    "data_path": "action_result.data.*.author",
+                    "data_type": "string",
+                    "column_name": "Author",
+                    "column_order": 5
                 },
                 {
                     "data_path": "action_result.summary.ticket_number",
@@ -1024,18 +1046,30 @@
                     "required": false,
                     "order": 4
                 },
+                "external_ref_key": {
+                    "description": "Filter by external reference key (e.g. es_finding_id; [a-z0-9_]{1,64}); use together with external_ref_value",
+                    "data_type": "string",
+                    "required": false,
+                    "order": 5
+                },
+                "external_ref_value": {
+                    "description": "Exact value of the external reference (compared as text); use together with external_ref_key",
+                    "data_type": "string",
+                    "required": false,
+                    "order": 6
+                },
                 "limit": {
                     "description": "Maximum number of tickets",
                     "data_type": "numeric",
                     "required": false,
-                    "order": 5,
+                    "order": 7,
                     "default": 100
                 },
                 "offset": {
                     "description": "Offset for paging",
                     "data_type": "numeric",
                     "required": false,
-                    "order": 6,
+                    "order": 8,
                     "default": 0
                 }
             },
@@ -1066,6 +1100,14 @@
                 },
                 {
                     "data_path": "action_result.parameter.q",
+                    "data_type": "string"
+                },
+                {
+                    "data_path": "action_result.parameter.external_ref_key",
+                    "data_type": "string"
+                },
+                {
+                    "data_path": "action_result.parameter.external_ref_value",
                     "data_type": "string"
                 },
                 {
@@ -1236,6 +1278,12 @@
                     "data_type": "string",
                     "column_name": "Actor",
                     "column_order": 1
+                },
+                {
+                    "data_path": "action_result.data.*.author",
+                    "data_type": "string",
+                    "column_name": "Author",
+                    "column_order": 6
                 },
                 {
                     "data_path": "action_result.data.*.source",

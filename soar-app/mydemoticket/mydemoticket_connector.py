@@ -288,9 +288,12 @@ class MyDemoTicketConnector(BaseConnector):
         ctype = param.get("type") or "comment"
         if ctype not in VALID_COMMENT_TYPES:
             return action_result.set_status(phantom.APP_ERROR, "Parameter type must be comment or work_note")
+        body = {"body": param.get("body"), "type": ctype}
+        author = param.get("author")
+        if author not in (None, ""):
+            body["author"] = author
         endpoint = "{}/comments".format(self._ticket_path(param["number"]))
-        ret, entry = self._make_rest_call(endpoint, action_result, method="POST",
-                                          body={"body": param.get("body"), "type": ctype})
+        ret, entry = self._make_rest_call(endpoint, action_result, method="POST", body=body)
         if phantom.is_fail(ret):
             return action_result.get_status()
         action_result.add_data(entry)
@@ -307,6 +310,17 @@ class MyDemoTicketConnector(BaseConnector):
         if limit <= 0 or offset < 0:
             return action_result.set_status(phantom.APP_ERROR, "limit must be > 0 and offset >= 0")
         params = {k: param.get(k) for k in ("state", "assignment_group", "assigned_to", "updated_since", "q")}
+        ref_key = str(param.get("external_ref_key") or "").strip()
+        ref_value = param.get("external_ref_value")
+        ref_value = "" if ref_value is None else str(ref_value)
+        if bool(ref_key) != bool(ref_value):
+            return action_result.set_status(
+                phantom.APP_ERROR, "Parameters external_ref_key and external_ref_value must be given together")
+        if ref_key:
+            if not EXTERNAL_REF_KEY_RE.match(ref_key):
+                return action_result.set_status(
+                    phantom.APP_ERROR, "Parameter external_ref_key must match [a-z0-9_]{1,64}")
+            params[EXTERNAL_REF_PREFIX + ref_key] = ref_value
         params.update({"limit": limit, "offset": offset})
         ret, resp = self._make_rest_call("/tickets", action_result, params=params)
         if phantom.is_fail(ret):
