@@ -25,6 +25,18 @@ export TOKEN=...   # admin or soar API token from initial-credentials.txt
 curl -s -H "Authorization: Bearer $TOKEN" http://127.0.0.1:8080/api/v1/tickets
 ```
 
+## Tenants
+
+MyDemoTicket is multi-tenant: every user (except `platform_admin`) belongs to one
+tenant and only sees its tickets, teams, custom fields and webhooks. The default
+tenant is `soc-games`; existing data is migrated into it on the first start of
+this version (backup `mydemoticket.sqlite3.pre-v2.bak`), and `admin` becomes
+`platform_admin`. A platform admin creates tenants with `POST /api/v1/tenants`
+and selects one per request with the header `X-MyDemoTicket-Tenant: <slug>`.
+Details: [docs/api.md](docs/api.md#tenants-multi-tenancy),
+[docs/architecture.md](docs/architecture.md#tenant-model-multi-tenancy); audit
+logging to Splunk: [docs/logging.md](docs/logging.md).
+
 ## Tests
 
 ```bash

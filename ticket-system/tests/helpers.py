@@ -83,17 +83,64 @@ class Response:
         return "<Response %s %r>" % (self.status, self.json)
 
 
+class AuditRecorder:
+    """In-memory stand-in for AuditLogger (same log/stats/start/stop/wait_idle interface)."""
+
+    def __init__(self):
+        self.events = []
+        self.lock = threading.Lock()
+        self.started = False
+        self.stopped = False
+
+    def start(self):
+        self.started = True
+
+    def stop(self):
+        self.stopped = True
+
+    def wait_idle(self, timeout=10.0):
+        return True
+
+    def log(self, action, *, tenant, actor=None, role=None, outcome="success", object_type=None,
+            object_id=None, source=None, ip=None, request_id=None, details=None):
+        with self.lock:
+            self.events.append({
+                "action": action, "tenant": tenant, "actor": actor, "role": role, "outcome": outcome,
+                "object_type": object_type, "object_id": object_id, "source": source, "ip": ip,
+                "request_id": request_id, "details": details if details is not None else {},
+            })
+
+    def stats(self):
+        with self.lock:
+            return {"recorder": True, "events": len(self.events)}
+
+    def find(self, action, **match):
+        with self.lock:
+            events = list(self.events)
+        return [e for e in events if e["action"] == action and all(e.get(k) == v for k, v in match.items())]
+
+    def clear(self):
+        with self.lock:
+            self.events = []
+
+
 class ServerTestCase(unittest.TestCase):
-    """Starts one server per test class on port 0 with a temporary data dir."""
+    """Starts one server per test class on port 0 with a temporary data dir.
+
+    Set ``use_recorder = True`` to inject an AuditRecorder instead of the real
+    AuditLogger (available as ``cls.audit``).
+    """
 
     seed = True
+    use_recorder = False
 
     @classmethod
     def setUpClass(cls):
         cls.tmpdir = tempfile.mkdtemp(prefix="mdt-test-")
+        cls.audit = AuditRecorder() if cls.use_recorder else None
         cls.app = App(
             os.path.join(cls.tmpdir, "data"), seed=cls.seed, admin_password=ADMIN_PASSWORD,
-            admin_token=ADMIN_TOKEN, webhook_backoff=0.02, quiet=True,
+            admin_token=ADMIN_TOKEN, webhook_backoff=0.02, quiet=True, audit_logger=cls.audit,
         )
         cls.httpd = cls.app.make_server("127.0.0.1", 0)
         cls.port = cls.httpd.server_address[1]
@@ -108,10 +155,11 @@ class ServerTestCase(unittest.TestCase):
         shutil.rmtree(cls.tmpdir, ignore_errors=True)
 
     @classmethod
-    def client_for(cls, username):
-        """API client authenticated with a fresh token for a seed user."""
+    def client_for(cls, username, tenant=None):
+        """API client authenticated with a fresh token for a user (of ``tenant``, default soc-games)."""
         if username not in cls._tokens:
-            resp = cls.admin.post("/users/%s/tokens" % username, {"name": "test"})
+            headers = {"X-MyDemoTicket-Tenant": tenant} if tenant else None
+            resp = cls.admin.post("/users/%s/tokens" % username, {"name": "test"}, headers=headers)
             assert resp.status == 201, resp
             cls._tokens[username] = resp.json["token"]
         return Client(cls.port, cls._tokens[username])

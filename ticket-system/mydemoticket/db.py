@@ -117,6 +117,75 @@ MIGRATIONS = [
     );
     CREATE INDEX IF NOT EXISTS idx_deliveries_webhook ON webhook_deliveries(webhook_id);
     """,
+    # 2: multi-tenancy. Everything that exists is moved into the default tenant
+    # 'soc-games'; the bootstrap user 'admin' becomes platform_admin (no tenant).
+    # teams and custom_field_defs are rebuilt because their names become unique
+    # per tenant instead of globally (SQLite cannot drop a UNIQUE constraint).
+    """
+    CREATE TABLE tenants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        slug TEXT NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        active INTEGER NOT NULL DEFAULT 1,
+        soar_url TEXT,
+        splunk_index TEXT,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    INSERT INTO tenants(slug, name, active, soar_url, splunk_index, created_at, updated_at)
+        VALUES('soc-games', 'SOC Games', 1, 'https://soar.soc-games.com', NULL,
+               strftime('%Y-%m-%dT%H:%M:%SZ', 'now'), strftime('%Y-%m-%dT%H:%M:%SZ', 'now'));
+
+    ALTER TABLE users ADD COLUMN tenant_id INTEGER REFERENCES tenants(id);
+    UPDATE users SET tenant_id = (SELECT id FROM tenants WHERE slug = 'soc-games');
+    UPDATE users SET role = 'platform_admin', tenant_id = NULL WHERE username = 'admin';
+    CREATE INDEX idx_users_tenant ON users(tenant_id);
+
+    ALTER TABLE sessions ADD COLUMN active_tenant_id INTEGER REFERENCES tenants(id);
+
+    ALTER TABLE tickets ADD COLUMN tenant_id INTEGER REFERENCES tenants(id);
+    UPDATE tickets SET tenant_id = (SELECT id FROM tenants WHERE slug = 'soc-games');
+    CREATE INDEX idx_tickets_tenant ON tickets(tenant_id, updated_at);
+
+    ALTER TABLE journal ADD COLUMN tenant_id INTEGER REFERENCES tenants(id);
+    UPDATE journal SET tenant_id = (SELECT t.tenant_id FROM tickets t WHERE t.id = journal.ticket_id);
+
+    CREATE TABLE teams_v2 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+        name TEXT NOT NULL,
+        description TEXT NOT NULL DEFAULT '',
+        UNIQUE(tenant_id, name)
+    );
+    INSERT INTO teams_v2(id, tenant_id, name, description)
+        SELECT id, (SELECT id FROM tenants WHERE slug = 'soc-games'), name, description FROM teams;
+    DROP TABLE teams;
+    ALTER TABLE teams_v2 RENAME TO teams;
+
+    CREATE TABLE custom_field_defs_v2 (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+        name TEXT NOT NULL,
+        label TEXT NOT NULL,
+        type TEXT NOT NULL,
+        choices TEXT NOT NULL DEFAULT '[]',
+        required INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        UNIQUE(tenant_id, name)
+    );
+    INSERT INTO custom_field_defs_v2(tenant_id, name, label, type, choices, required, created_at)
+        SELECT (SELECT id FROM tenants WHERE slug = 'soc-games'), name, label, type, choices, required,
+               created_at
+        FROM custom_field_defs ORDER BY created_at, name;
+    DROP TABLE custom_field_defs;
+    ALTER TABLE custom_field_defs_v2 RENAME TO custom_field_defs;
+
+    ALTER TABLE webhooks ADD COLUMN tenant_id INTEGER REFERENCES tenants(id);
+    UPDATE webhooks SET tenant_id = (SELECT id FROM tenants WHERE slug = 'soc-games');
+    ALTER TABLE webhook_deliveries ADD COLUMN tenant_id INTEGER REFERENCES tenants(id);
+    UPDATE webhook_deliveries SET tenant_id = (SELECT w.tenant_id FROM webhooks w
+                                               WHERE w.id = webhook_deliveries.webhook_id);
+    """,
 ]
 
 FIRST_TICKET_NUMBER = 1001
@@ -182,22 +251,58 @@ class Database:
         return self.conn.execute("PRAGMA user_version").fetchone()[0]
 
     def migrate(self):
+        """Apply pending migrations, each one in its own transaction.
+
+        Foreign keys are switched off while migrating (SQLite only allows that
+        outside a transaction) so that rebuilding a table never cascades into the
+        rows that reference it; ``PRAGMA foreign_key_check`` must be clean before
+        a step is committed. Before upgrading an existing database file, a copy is
+        written to ``<db>.pre-v<N>.bak`` (once per target version).
+        """
         with self.lock:
             current = self.schema_version()
-            for index, script in enumerate(MIGRATIONS):
-                version = index + 1
-                if version <= current:
-                    continue
-                self.conn.execute("BEGIN")
-                try:
-                    for statement in script.split(";"):
-                        if statement.strip():
-                            self.conn.execute(statement)
-                    self.conn.execute("PRAGMA user_version = %d" % version)
-                    self.conn.execute("COMMIT")
-                except Exception:
-                    self.conn.execute("ROLLBACK")
-                    raise
+            if current >= len(MIGRATIONS):
+                return
+            if current > 0:
+                self._backup_before(len(MIGRATIONS))
+            self.conn.execute("PRAGMA foreign_keys = OFF")
+            try:
+                for index, script in enumerate(MIGRATIONS):
+                    version = index + 1
+                    if version <= current:
+                        continue
+                    self.conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        for statement in script.split(";"):
+                            if statement.strip():
+                                self.conn.execute(statement)
+                        problems = self.conn.execute("PRAGMA foreign_key_check").fetchall()
+                        if problems:
+                            raise sqlite3.IntegrityError(
+                                "migration %d breaks %d foreign key reference(s)" % (version, len(problems))
+                            )
+                        self.conn.execute("PRAGMA user_version = %d" % version)
+                        self.conn.execute("COMMIT")
+                    except Exception:
+                        self.conn.execute("ROLLBACK")
+                        raise
+            finally:
+                self.conn.execute("PRAGMA foreign_keys = ON")
+
+    def _backup_before(self, target_version):
+        if self.path == ":memory:":
+            return
+        backup_path = "%s.pre-v%d.bak" % (self.path, target_version)
+        if os.path.exists(backup_path):
+            return
+        fd = os.open(backup_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+        dest = sqlite3.connect(backup_path)
+        try:
+            self.conn.backup(dest)
+        finally:
+            dest.close()
+        os.chmod(backup_path, 0o600)
 
     # -- helpers ----------------------------------------------------------
     def execute(self, sql, params=()):

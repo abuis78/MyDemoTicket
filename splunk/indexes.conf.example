@@ -1,0 +1,12 @@
+# Example: ONE index for all MyDemoTicket tenants.
+# Tenants are separated by the indexed field "tenant" (see fields.conf) and by
+# per-tenant roles with srchFilter = tenant::<slug> (see authorize.conf.example).
+# Copy to $SPLUNK_HOME/etc/apps/<your_app>/local/indexes.conf on the indexers and
+# adapt retention / size.
+
+[mydemoticket]
+homePath   = $SPLUNK_DB/mydemoticket/db
+coldPath   = $SPLUNK_DB/mydemoticket/colddb
+thawedPath = $SPLUNK_DB/mydemoticket/thaweddb
+frozenTimePeriodInSecs = 31536000
+maxTotalDataSizeMB = 10000

@@ -12,7 +12,8 @@ Group=@USER@
 WorkingDirectory=@INSTALL_DIR@
 Environment=PYTHONUNBUFFERED=1
 Environment=MYDEMOTICKET_DATA_DIR=@DATA_DIR@
-# Optional: MYDEMOTICKET_ADMIN_PASSWORD / MYDEMOTICKET_ADMIN_TOKEN (root-only file, 0600)
+# Optional: MYDEMOTICKET_ADMIN_PASSWORD / MYDEMOTICKET_ADMIN_TOKEN, MYDEMOTICKET_HEC_* (root-only file, 0600;
+# on AWS rewritten by deploy/aws/boot.sh on every boot, never overwritten by install.sh)
 EnvironmentFile=-@ENV_FILE@
 ExecStart=@PYTHON@ -m mydemoticket --host 127.0.0.1 --port @PORT@ --data-dir @DATA_DIR@ --secure-cookies
 Restart=on-failure
@@ -22,6 +23,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
+# covers the database and the local audit log in @DATA_DIR@/logs
 ReadWritePaths=@DATA_DIR@
 ProtectKernelTunables=true
 ProtectControlGroups=true

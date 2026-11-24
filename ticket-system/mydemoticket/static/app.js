@@ -87,9 +87,33 @@
     });
   }
 
+  // Readable texts for the tenant errors of the API (see docs/api.md, "Tenant context").
+  var TENANT_ERRORS = {
+    "tenant mismatch": "This request names a tenant other than your own. You can only work in your own tenant.",
+    "tenant inactive": "This tenant is deactivated. Please contact a platform administrator.",
+    "tenant not found": "This tenant does not exist. Please choose another tenant."
+  };
+
+  function errorText(err) {
+    var message = (err && err.message) || String(err);
+    if (TENANT_ERRORS[message]) return TENANT_ERRORS[message] + " (" + err.status + " " + message + ")";
+    if (err && err.status === 403) return "Not allowed: " + message;
+    if (err && err.status === 404) return "Not found (it may belong to another tenant): " + message;
+    return message;
+  }
+
   function fail(err) {
     if (err && err.status === 401) { session.me = null; showLogin(); return; }
-    toast(err.message || String(err), true);
+    if (err && err.status === 403 && err.message === "tenant inactive" && session.me && !isPlatform()) {
+      session.me = null; showLogin(errorText(err)); return;
+    }
+    toast(errorText(err), true);
+  }
+
+  function isPlatform() { return !!session.me && session.me.role === "platform_admin"; }
+  function isAdmin() { return !!session.me && (session.me.role === "admin" || isPlatform()); }
+  function canSeeReports() {
+    return !!session.me && ["admin", "agent", "platform_admin"].indexOf(session.me.role) >= 0;
   }
 
   function fmtTime(iso) {
@@ -135,7 +159,7 @@
   function canModify(ticket) {
     var me = session.me;
     if (!me) return false;
-    if (me.role === "admin" || me.role === "integration") return true;
+    if (isAdmin() || me.role === "integration") return true;
     if (me.role !== "agent") return false;
     if (!ticket.assignment_group && !ticket.assigned_to) return true;
     if (ticket.assigned_to === me.username) return true;
@@ -156,42 +180,84 @@
     document.getElementById("sidebar").hidden = !loggedIn;
     document.getElementById("userbox").hidden = !loggedIn;
     document.getElementById("global-search").hidden = !loggedIn;
-    var isAdmin = loggedIn && session.me.role === "admin";
-    Array.prototype.forEach.call(document.querySelectorAll(".admin-only"), function (el) {
-      el.hidden = !isAdmin;
-    });
+    function show(selector, visible) {
+      Array.prototype.forEach.call(document.querySelectorAll(selector), function (el) { el.hidden = !visible; });
+    }
+    show(".admin-only", loggedIn && isAdmin());
+    show(".platform-only", loggedIn && isPlatform());
+    show(".reports-only", loggedIn && canSeeReports());
     if (loggedIn) {
       document.getElementById("user-name").textContent =
         session.me.display_name + " (" + session.me.role + ")";
+      drawTenantBox();
     }
+  }
+
+  // Header: name of the active tenant; platform admins get a switcher fed by /me.tenants.
+  function drawTenantBox() {
+    var me = session.me;
+    var active = me.active_tenant || me.tenant || {};
+    var nameEl = document.getElementById("tenant-name");
+    var sel = document.getElementById("tenant-switch");
+    nameEl.textContent = active.name || active.slug || "-";
+    nameEl.hidden = isPlatform();
+    sel.hidden = !isPlatform();
+    clear(sel);
+    if (!isPlatform()) return;
+    (me.tenants || []).forEach(function (t) {
+      sel.appendChild(h("option", { value: t.slug, selected: t.slug === active.slug },
+        t.name + (t.active ? "" : " (inactive)")));
+    });
+  }
+
+  document.getElementById("tenant-switch").addEventListener("change", function (ev) {
+    var slug = ev.target.value;
+    api("POST", "/auth/tenant", { tenant: slug }).then(function (me) {
+      return applyMe(me).then(function () {
+        toast("Switched to tenant " + ((me.active_tenant && me.active_tenant.name) || slug));
+        // a ticket of the old tenant is a 404 in the new one: go back to the list
+        if (/^\/tickets\/./.test(parseHash().path)) location.hash = "#/tickets";
+        else route();
+      });
+    }).catch(function (err) { drawTenantBox(); fail(err); });
+  });
+
+  // Stores the /me object and (re)loads the tenant's reference data and the header.
+  function applyMe(me) {
+    session.me = me;
+    session.csrf = me.csrf_token || session.csrf;
+    return loadReference().then(function () { setChrome(true); });
+  }
+
+  function refreshMe() {
+    return api("GET", "/me").then(applyMe).catch(fail);
   }
 
   function start() {
     api("GET", "/me").then(function (me) {
-      session.me = me;
-      session.csrf = me.csrf_token;
-      return loadReference().then(function () { setChrome(true); route(); });
-    }).catch(function () { showLogin(); });
+      return applyMe(me).then(route);
+    }).catch(function (err) {
+      showLogin(err && err.status === 403 ? errorText(err) : "");
+    });
   }
 
-  function showLogin() {
+  function showLogin(message) {
     setChrome(false);
     var user = h("input", { id: "login-user", autocomplete: "username", required: true });
     var pass = h("input", { id: "login-pass", type: "password", autocomplete: "current-password", required: true });
-    var error = h("div", { class: "error" });
+    var error = h("div", { class: "error", role: "alert", text: typeof message === "string" ? message : "" });
     var form = h("form", {
       onsubmit: function (ev) {
         ev.preventDefault();
         error.textContent = "";
-        api("POST", "/auth/login", { username: user.value, password: pass.value }).then(function (me) {
-          session.me = me;
-          session.csrf = me.csrf_token;
-          return loadReference().then(function () {
-            setChrome(true);
+        api("POST", "/auth/login", { username: user.value, password: pass.value }).then(function (login) {
+          session.csrf = login.csrf_token;
+          // the login response has no tenant list; /me adds active_tenant + tenants for platform admins
+          return api("GET", "/me").then(applyMe).then(function () {
             if (!location.hash || location.hash === "#/login") location.hash = "#/tickets";
             else route();
           });
-        }).catch(function (err) { error.textContent = err.message; });
+        }).catch(function (err) { error.textContent = errorText(err); });
       }
     },
       h("div", { class: "panel-body" },
@@ -225,6 +291,9 @@
     else if (r.path === "/admin/teams") { nav = "teams"; viewTeams(); }
     else if (r.path === "/admin/custom-fields") { nav = "custom-fields"; viewFields(); }
     else if (r.path === "/admin/webhooks") { nav = "webhooks"; viewWebhooks(); }
+    else if (r.path === "/admin/audit") { nav = "audit"; viewAudit(); }
+    else if (r.path === "/admin/tenants") { nav = "tenants"; viewTenants(); }
+    else if (r.path === "/reports") { nav = "reports"; viewReports(r.params); }
     else {
       if (r.params.mine) nav = "mine";
       else if (r.params.unassigned) nav = "unassigned";
@@ -574,14 +643,21 @@
     api("GET", "/users").then(function (users) {
       session.users = users;
       var secretBox = h("div");
+      var platform = isPlatform();
       var rows = users.map(function (u) {
-        var role = select("role-" + u.username, ["admin", "agent", "requester", "integration"], u.role);
+        // changing a role to or from platform_admin is not possible (422), so that select is read-only
+        var isPa = u.role === "platform_admin";
+        var role = select("role-" + u.username,
+          isPa ? ["platform_admin"] : ["admin", "agent", "requester", "integration"], u.role);
+        role.setAttribute("aria-label", "Role of " + u.username);
+        if (isPa) role.disabled = true;
         role.addEventListener("change", function () {
           api("PATCH", "/users/" + encodeURIComponent(u.username), { role: role.value })
             .then(function () { toast("Role updated"); }).catch(function (e) { fail(e); viewUsers(); });
         });
         return h("tr", null,
           h("td", { text: u.username }), h("td", { text: u.display_name }), h("td", null, role),
+          platform ? h("td", { text: u.tenant || "(platform)" }) : null,
           h("td", { text: u.teams.join(", ") }), h("td", { text: u.active ? "active" : "inactive" }),
           h("td", { class: "actions" },
             h("button", {
@@ -611,24 +687,52 @@
       });
       var name = h("input", { id: "u-name", required: true });
       var display = h("input", { id: "u-display" });
-      var roleSel = select("u-role", ["agent", "requester", "integration", "admin"], "agent");
+      var roleSel = select("u-role", ["agent", "requester", "integration", "admin"]
+        .concat(platform ? ["platform_admin"] : []), "agent");
       var pw = h("input", { id: "u-pw", type: "password", autocomplete: "new-password" });
       var teamSel = select("u-team", session.teams.map(function (t) { return t.name; }), "", "-- none --");
+      var activeSlug = (session.me.active_tenant || session.me.tenant || {}).slug;
+      // platform admins choose the tenant of the new user; tenant admins always create in their own tenant
+      var tenantSel = platform ? select("u-tenant", (session.me.tenants || []).map(function (t) {
+        return [t.slug, t.name + " (" + t.slug + ")" + (t.active ? "" : " - inactive")];
+      }), activeSlug) : null;
+      var tenantHint = h("div", { class: "wide muted", id: "u-tenant-hint" });
+      function syncTenantFields() {
+        if (!platform) return;
+        var noTenant = roleSel.value === "platform_admin";
+        tenantSel.disabled = noTenant;
+        // teams are listed for the active tenant only
+        teamSel.disabled = noTenant || tenantSel.value !== activeSlug;
+        if (teamSel.disabled) teamSel.value = "";
+        tenantHint.textContent = noTenant ? "Platform admins belong to no tenant and have no teams."
+          : tenantSel.value !== activeSlug ? "Teams can only be chosen for the active tenant; switch the tenant to assign teams."
+            : "";
+      }
+      if (platform) {
+        roleSel.addEventListener("change", syncTenantFields);
+        tenantSel.addEventListener("change", syncTenantFields);
+      }
       var form = h("form", {
         class: "panel-body form-grid", onsubmit: function (ev) {
           ev.preventDefault();
           var body = { username: name.value, display_name: display.value, role: roleSel.value };
           if (pw.value) body.password = pw.value;
-          if (teamSel.value) body.teams = [teamSel.value];
-          api("POST", "/users", body).then(function () { toast("User created"); refreshReference().then(viewUsers); })
-            .catch(fail);
+          if (teamSel.value && !teamSel.disabled) body.teams = [teamSel.value];
+          if (platform && roleSel.value !== "platform_admin") body.tenant = tenantSel.value;
+          api("POST", "/users", body).then(function (u) {
+            toast(u.tenant && u.tenant !== activeSlug ? "User created in tenant " + u.tenant : "User created");
+            refreshReference().then(viewUsers);
+          }).catch(fail);
         }
       }, field("User name", name, { required: true }), field("Display name", display), field("Role", roleSel),
-        field("Password (optional)", pw), field("Team", teamSel),
+        platform ? field("Tenant", tenantSel, { required: true }) : null,
+        field("Password (optional)", pw), field("Team", teamSel), tenantHint,
         h("div", { class: "wide" }, h("button", { class: "primary", type: "submit" }, "Create user")));
+      syncTenantFields();
+      var headers = ["User name", "Display name", "Role"].concat(platform ? ["Tenant"] : [])
+        .concat(["Teams", "Status", ""]);
       render(adminPanel("Users",
-        form, h("div", null, secretBox,
-          table(["User name", "Display name", "Role", "Teams", "Status", ""], rows))));
+        form, h("div", null, secretBox, table(headers, rows))));
     }).catch(fail);
   }
 
@@ -765,6 +869,164 @@
             h("td", { text: String(d.attempts) }), h("td", { text: d.error }));
         }))));
     }).catch(fail);
+  }
+
+  // --------------------------------------------------------- tenants (platform)
+  function viewTenants() {
+    if (!isPlatform()) { render(h("p", { class: "error", text: "Only platform admins manage tenants." })); return; }
+    api("GET", "/tenants").then(function (tenants) {
+      var editBox = h("div");
+      var rows = tenants.map(function (t) {
+        return h("tr", null, h("td", { class: "mono", text: t.slug }), h("td", { text: t.name }),
+          h("td", { text: t.active ? "active" : "inactive" }), h("td", { class: "mono", text: t.soar_url || "" }),
+          h("td", { class: "mono", text: t.splunk_index || "(default)" }), h("td", { text: t.default ? "yes" : "" }),
+          h("td", { class: "actions" }, h("button", {
+            type: "button", "aria-label": "Edit tenant " + t.slug,
+            onclick: function () { editTenant(t, editBox); }
+          }, "Edit")));
+      });
+      var slug = h("input", { id: "tn-slug", required: true, pattern: "[a-z0-9-]{2,32}", maxlength: 32,
+        placeholder: "e.g. acme", "aria-describedby": "tn-slug-hint" });
+      var name = h("input", { id: "tn-name", required: true, maxlength: 200 });
+      var soar = h("input", { id: "tn-soar", type: "url", placeholder: "https://soar.example.invalid" });
+      var index = h("input", { id: "tn-index", placeholder: "empty = default index" });
+      var seed = h("input", { id: "tn-seed", type: "checkbox", checked: true });
+      var form = h("form", {
+        class: "panel-body form-grid", onsubmit: function (ev) {
+          ev.preventDefault();
+          var body = { slug: slug.value.trim(), name: name.value.trim(), seed: seed.checked };
+          if (soar.value.trim()) body.soar_url = soar.value.trim();
+          if (index.value.trim()) body.splunk_index = index.value.trim();
+          api("POST", "/tenants", body).then(function (t) {
+            toast("Tenant " + t.slug + " created");
+            return refreshMe().then(viewTenants);
+          }).catch(fail);
+        }
+      }, field("Slug", slug, { required: true }), field("Name", name, { required: true }),
+        field("SOAR URL (optional)", soar), field("Splunk index (optional)", index),
+        h("div", { class: "wide" }, h("label", { for: "tn-seed" }, seed, " With standard teams and custom fields (seed)")),
+        h("div", { class: "wide muted", id: "tn-slug-hint",
+          text: "Slug: 2-32 characters a-z, 0-9 and '-'; it cannot be changed later." }),
+        h("div", { class: "wide" }, h("button", { class: "primary", type: "submit" }, "Create tenant")));
+      render(adminPanel("Tenants", form,
+        table(["Slug", "Name", "Status", "SOAR URL", "Splunk index", "Default", ""], rows), editBox));
+    }).catch(fail);
+  }
+
+  function editTenant(t, target) {
+    var name = h("input", { id: "te-name", required: true, maxlength: 200, value: t.name });
+    var active = h("input", { id: "te-active", type: "checkbox", checked: t.active, disabled: t.default,
+      "aria-describedby": t.default ? "te-active-hint" : null });
+    var soar = h("input", { id: "te-soar", type: "url", value: t.soar_url || "" });
+    var index = h("input", { id: "te-index", value: t.splunk_index || "", placeholder: "empty = default index" });
+    var form = h("form", {
+      class: "panel-body form-grid", onsubmit: function (ev) {
+        ev.preventDefault();
+        var body = { name: name.value.trim(), soar_url: soar.value.trim() || null,
+          splunk_index: index.value.trim() || null };
+        if (!t.default) body.active = active.checked;
+        api("PATCH", "/tenants/" + encodeURIComponent(t.slug), body).then(function () {
+          toast("Tenant " + t.slug + " saved");
+          return refreshMe().then(viewTenants);
+        }).catch(fail);
+      }
+    }, field("Name", name, { required: true }),
+      h("div", null, h("label", { for: "te-active" }, active, " Active")),
+      field("SOAR URL", soar), field("Splunk index", index),
+      t.default ? h("div", { class: "wide muted", id: "te-active-hint",
+        text: "The default tenant cannot be deactivated." }) : null,
+      h("div", { class: "wide actions" },
+        h("button", { class: "primary", type: "submit" }, "Save"),
+        h("button", { type: "button", onclick: function () { clear(target); } }, "Cancel")));
+    clear(target);
+    target.appendChild(h("div", { class: "panel" },
+      h("div", { class: "panel-head" }, h("h2", { text: "Edit tenant " + t.slug })), form));
+    name.focus();
+  }
+
+  // ------------------------------------------------------------------ reports
+  var REPORT_RANGES = [["7", "Last 7 days"], ["30", "Last 30 days"], ["90", "Last 90 days"], ["all", "All time"]];
+
+  function tile(label, value, cls) {
+    return h("div", { class: "tile" + (cls ? " " + cls : "") },
+      h("div", { class: "tile-label", text: label }),
+      h("div", { class: "tile-value" + (String(value).length > 14 ? " small" : ""), text: String(value) }));
+  }
+
+  // One bar list; widths are set through the CSSOM (allowed by the CSP, unlike style attributes).
+  function bars(title, entries) {
+    var max = entries.reduce(function (m, e) { return Math.max(m, e[1]); }, 0);
+    return h("div", null, h("h3", { text: title }),
+      h("ul", { class: "bars", "aria-label": title }, entries.map(function (e) {
+        var fill = h("div", { class: "bar-fill" });
+        fill.style.width = (max ? Math.round(e[1] * 100 / max) : 0) + "%";
+        return h("li", null, h("span", { class: "bar-label", title: e[0], text: e[0] }),
+          h("div", { class: "bar-track", "aria-hidden": "true" }, fill),
+          h("span", { class: "bar-count", text: String(e[1]) }));
+      })));
+  }
+
+  function viewReports(params) {
+    if (!canSeeReports()) { render(h("p", { class: "error", text: "Reports are available for admins and agents." })); return; }
+    var range = params.since || "30";
+    var rangeSel = select("r-since", REPORT_RANGES, range);
+    rangeSel.addEventListener("change", function () { location.hash = "#/reports?since=" + rangeSel.value; });
+    var body = h("div", { class: "panel-body", "aria-live": "polite" }, h("p", { class: "muted", text: "Loading..." }));
+    var tenant = (session.me.active_tenant || session.me.tenant || {}).name || "";
+    render(h("div", { class: "panel" },
+      h("div", { class: "panel-head" }, h("h1", { text: "Reports" + (tenant ? " - " + tenant : "") }),
+        h("span", { class: "spacer" }), h("label", { for: "r-since", text: "Period" }), rangeSel),
+      body));
+    var qs = "";
+    var days = parseInt(range, 10);
+    if (days > 0) {
+      var since = new Date(Date.now() - days * 86400000).toISOString().replace(/\.\d{3}Z$/, "Z");
+      qs = "?since=" + encodeURIComponent(since);
+    }
+    api("GET", "/reports/summary" + qs).then(function (r) {
+      clear(body);
+      var prio = Object.keys(r.by_priority).sort().map(function (k) { return [PRIORITIES[k] || k, r.by_priority[k]]; });
+      var states = STATES.filter(function (s) { return s in r.by_state; })
+        .map(function (s) { return [STATE_LABEL[s], r.by_state[s]]; });
+      var teams = Object.keys(r.by_team).map(function (k) { return [k, r.by_team[k]]; });
+      body.appendChild(h("div", { class: "tiles" },
+        tile("Tickets total", r.tickets_total), tile("Open", r.open_count),
+        tile("Created (last 7 days)", r.created_last_7d), tile("Resolved (last 7 days)", r.resolved_last_7d),
+        tile("MTTR (hours)", r.mttr_hours === null || r.mttr_hours === undefined ? "-" : r.mttr_hours)));
+      body.appendChild(h("p", { class: "muted",
+        text: "All numbers refer to tickets created " + (days > 0 ? "in the selected period" : "at any time") +
+          ". Generated " + fmtTime(r.generated_at) + "." }));
+      body.appendChild(h("div", { class: "bar-groups" },
+        bars("By state", states), bars("By priority", prio), bars("By team", teams)));
+    }).catch(function (err) {
+      clear(body);
+      body.appendChild(h("p", { class: "error", text: errorText(err) }));
+    });
+  }
+
+  // ----------------------------------------------------------- audit / splunk
+  function viewAudit() {
+    var body = h("div", { class: "panel-body", "aria-live": "polite" }, h("p", { class: "muted", text: "Loading..." }));
+    render(h("div", { class: "panel" },
+      h("div", { class: "panel-head" }, h("h1", { text: "Audit / Splunk" }), h("span", { class: "spacer" }),
+        h("button", { type: "button", onclick: viewAudit }, "Refresh")),
+      body));
+    api("GET", "/audit/status").then(function (s) {
+      clear(body);
+      function num(v) { return v === null || v === undefined ? "-" : v; }
+      body.appendChild(h("div", { class: "tiles" },
+        tile("Splunk HEC", s.hec_enabled ? "active" : "off", s.hec_enabled ? "ok" : null),
+        tile("Sent", num(s.sent)), tile("Failed", num(s.failed), s.failed ? "bad" : null),
+        tile("Dropped", num(s.dropped), s.dropped ? "bad" : null), tile("Queued", num(s.queued)),
+        tile("Last success", s.last_success_at ? fmtTime(s.last_success_at) : "-"),
+        tile("Last error", s.last_error || "none", s.last_error ? "bad" : null)));
+      body.appendChild(h("p", { class: "muted",
+        text: "Every action is also written to the local audit log" +
+          (s.local_written !== undefined ? " (" + s.local_written + " events)" : "") + ". Numbers are since the server start." }));
+    }).catch(function (err) {
+      clear(body);
+      body.appendChild(h("p", { class: "error", text: errorText(err) }));
+    });
   }
 
   start();

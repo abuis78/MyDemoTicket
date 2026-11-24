@@ -73,9 +73,21 @@ def _json_or_empty(data):
     return value if isinstance(value, dict) else {}
 
 
+class _NoAudit:
+    def log(self, action, **kwargs):
+        pass
+
+
 class WebhookDispatcher:
-    def __init__(self, db, store_soar_container_id, backoff_seconds=1.0, timeout=10):
+    """Delivers events to the active webhooks of the ticket's tenant.
+
+    ``audit`` (an AuditLogger or compatible) receives one ``webhook.delivery``
+    event per delivery with its final outcome (success / failure / skipped).
+    """
+
+    def __init__(self, db, store_soar_container_id, backoff_seconds=1.0, timeout=10, audit=None):
         self.db = db
+        self.audit = audit or _NoAudit()
         self.store_soar_container_id = store_soar_container_id
         self.backoff_seconds = backoff_seconds
         self.timeout = timeout
@@ -106,8 +118,22 @@ class WebhookDispatcher:
         return False
 
     # -- emit -------------------------------------------------------------
-    def emit(self, event, ticket, actor, source, changes=None, comment=None):
-        rows = self.db.query("SELECT * FROM webhooks WHERE active = 1")
+    def _log_delivery(self, outcome, hook_id, delivery_id, payload_or_meta, status_code=None, attempts=0,
+                      error=None):
+        meta = payload_or_meta
+        details = {"event": meta["event"], "status": status_code, "attempt": attempts, "webhook_id": hook_id,
+                   "ticket": meta["ticket"]["number"]}
+        if error:
+            details["error"] = error[:200]
+        self.audit.log("webhook.delivery", tenant=meta.get("tenant") or "unknown", actor="system", role=None,
+                       outcome=outcome, object_type="webhook_delivery", object_id=delivery_id,
+                       source="webhook", request_id=meta.get("request_id"), details=details)
+
+    def emit(self, event, ticket, actor, source, changes=None, comment=None, tenant=None, request_id=None):
+        """Queue ``event`` for every active webhook of ``tenant`` (a tenants row) subscribed to it."""
+        if tenant is None:
+            return
+        rows = self.db.query("SELECT * FROM webhooks WHERE active = 1 AND tenant_id = ?", (tenant["id"],))
         now = utcnow()
         for hook in rows:
             events = loads(hook["events"], [])
@@ -117,7 +143,7 @@ class WebhookDispatcher:
             skipped = hook["type"] == "soar" and (source or "").strip().lower() == "soar"
             cur = self.db.execute(
                 "INSERT INTO webhook_deliveries(webhook_id, delivery_id, event, ticket_number, status, "
-                "attempts, error, created_at, updated_at) VALUES(?, ?, ?, ?, ?, 0, ?, ?, ?)",
+                "attempts, error, created_at, updated_at, tenant_id) VALUES(?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
                 (
                     hook["id"],
                     delivery_id,
@@ -127,21 +153,24 @@ class WebhookDispatcher:
                     "change originated from SOAR (loop prevention)" if skipped else "",
                     now,
                     now,
+                    tenant["id"],
                 ),
             )
-            if skipped:
-                continue
             payload = {
                 "event": event,
                 "delivery_id": delivery_id,
                 "timestamp": now,
+                "tenant": tenant["slug"],
                 "source": source or "",
                 "actor": actor,
                 "ticket": ticket,
                 "changes": changes or {},
                 "comment": comment,
             }
-            self.queue.put((cur.lastrowid, hook["id"], payload))
+            if skipped:
+                self._log_delivery("skipped", hook["id"], delivery_id, dict(payload, request_id=request_id))
+                continue
+            self.queue.put((cur.lastrowid, hook["id"], payload, request_id))
 
     # -- worker -----------------------------------------------------------
     def _run(self):
@@ -164,10 +193,11 @@ class WebhookDispatcher:
             tuple(fields[k] for k in keys) + (row_id,),
         )
 
-    def _process(self, row_id, hook_id, payload):
+    def _process(self, row_id, hook_id, payload, request_id=None):
         hook = self.db.query_one("SELECT * FROM webhooks WHERE id = ?", (hook_id,))
         if hook is None:
             return
+        meta = dict(payload, request_id=request_id)
         last_error, last_status = "", None
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
@@ -176,6 +206,7 @@ class WebhookDispatcher:
                 else:
                     status = self._deliver_generic(hook, payload)
                 self._update(row_id, status="success", response_code=status, attempts=attempt, error="")
+                self._log_delivery("success", hook_id, payload["delivery_id"], meta, status, attempt)
                 return
             except DeliveryError as exc:
                 last_error, last_status = str(exc), exc.status
@@ -185,6 +216,8 @@ class WebhookDispatcher:
                 )
             if attempt < MAX_ATTEMPTS and not self._stopping.is_set():
                 time.sleep(self.backoff_seconds * (2 ** (attempt - 1)))
+        self._log_delivery("failure", hook_id, payload["delivery_id"], meta, last_status, MAX_ATTEMPTS,
+                           last_error)
 
     def _deliver_generic(self, hook, payload):
         body = json.dumps(payload, sort_keys=True).encode("utf-8")
@@ -238,6 +271,7 @@ class WebhookDispatcher:
                 "customFields": json.dumps(ticket.get("custom_fields") or {}, sort_keys=True),
                 "esFindingId": str(refs.get("es_finding_id") or ""),
                 "source": payload.get("source") or "",
+                "tenant": payload.get("tenant") or "",
             },
             "run_automation": True,
         }
