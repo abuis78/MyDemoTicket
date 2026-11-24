@@ -1,5 +1,5 @@
 Versuch: 2/5
-Punkte: 4/6
+Punkte: 6/6
 
 # Loop-Protokoll: DEMEO Tecieket Ting system (MyDemoTicket)
 
@@ -37,6 +37,7 @@ Nuzte sub agent teams du bist orchestrator
 - Versuch 1 · Inspektor: model sonnet, effort medium – wie im Auftrag vorgegeben.
 - Versuch 2 · Protokoll-Agent: model haiku, effort medium – HOCHGESTUFT von low auf medium, weil der Inspektor in Versuch 1 die Punkte 5 und 6 (Protokoll) nicht bestanden ließ.
 - Versuch 2 · Inspektor: model sonnet, effort medium – wie im Auftrag vorgegeben.
+- Versuch 2 · Protokoll-Nachtrag Urteil: model haiku, effort medium – nicht heruntergestuft (Regel: nie herunterstufen).
 
 ## Annahmen
 1. „Mockups erst nach Freigabe“: Der Loop-Auftrag gilt als Freigabe („Dieser Auftrag ist die Freigabe“). Mockups werden als statische HTML-Dateien unter docs/mockups/ erstellt, der Bau läuft ohne Warten weiter.
@@ -91,7 +92,19 @@ Außerhalb des Umfangs: kein Befund. Tests abgeschwächt/gelöscht: kein Befund 
 Ergebnis Versuch 1: 4/6.
 
 ### Versuch 2 – Protokoll-Nachträge (Punkte 5, 6)
-- Externe Werkzeuge vollständig nachgetragen (gh pr list, gh issue list 15:29; git fetch 16:00), Aufwand und Versuchsbericht ergänzt. Urteil des Inspektors folgt.
+- Externe Werkzeuge vollständig nachgetragen (gh pr list, gh issue list 15:29; git fetch 16:00), Aufwand und Versuchsbericht ergänzt.
+
+### Versuch 2 – Urteil des Inspektors (sonnet, medium), HEAD 51977ef
+| Punkt | Urteil | Beleg (vom Inspektor selbst ausgeführt) |
+|---|---|---|
+| 1 Ticket System gebaut | BESTANDEN | ticket-system `python3 -m unittest discover -s tests -v`: „Ran 61 tests in 10.988s“, „OK“; Spec-Abdeckung im Code/API geprüft |
+| 2 SOAR App gebaut | BESTANDEN | soar-app `python3 -m unittest discover -s tests -v`: „Ran 49 tests in 2.290s“, „OK“; 10 Actions; Playbooks vorhanden |
+| 3 E2E mehrfach, beide Richtungen | BESTANDEN | `bash scripts/e2e.sh 3`: exit 0, „E2E run 1/3: OK“, „E2E run 2/3: OK“, „E2E run 3/3: OK“, je „Ran 8 tests“, „OK“ (nur 127.0.0.1) |
+| 4 Kein Secret im Diff | BESTANDEN | grep auf `git diff main...HEAD`: nur Platzhalter (z. B. "test-token", "soar-ph-auth-token-placeholder", "$PASSWORD"); keine .env/.db/.pem/.key-Dateien |
+| 5 Protokoll vollständig | BESTANDEN | Kopfzeilen 2/5 und 4/6 passend zu Versuch 1; Spec, Checkliste, Annahmen 1–15, Aufwand mit Hochstufung, Externe Werkzeuge, Urteil V1, Braucht Andreas vorhanden |
+| 6 Externe Werkzeuge vermerkt | BESTANDEN | `git reflog`, `git remote -v`, grep nach URLs/curl/ssh/socket: kein unvermerkter Push/Fetch, keine fest verdrahteten Ziele; Tabelle vollständig und plausibel |
+Außerhalb des Umfangs: kein Befund. Tests abgeschwächt/gelöscht: kein Befund (a69721d macht den Test strenger: startswith("3") → == "3.13").
+Ergebnis Versuch 2: 6/6 – alle Punkte bestanden.
 
 ## Braucht Andreas
 1. AWS-Instanz anlegen (kostenpflichtig, extern) – nicht ausgeführt; Deploy-Skript liegt im Repo.
@@ -99,3 +112,7 @@ Ergebnis Versuch 1: 4/6.
 3. SOAR-App auf dem echten SOAR installieren und Live-Test SOAR ↔ Ticket ↔ ES (Schreibzugriff auf Live-Systeme) – nicht ausgeführt.
 4. Web-Oberfläche einmal im Browser durchklicken (nur per HTTP-Tests geprüft).
 5. ES-Mirror-Playbook: Parameternamen der Splunk-Aktion „update event“ (integer_status u. a.) gegen die installierte Splunk-App prüfen und Playbooks in SOAR importieren.
+
+## Ende
+- Alle 6 Punkte vom Inspektor in Versuch 2 bestanden (ca. 16:05).
+- Nächster Schritt des Orchestrators: git push von feature/mydemoticket-loop nach origin und gh pr create (nicht mergen). Ergebnis wird in der Tabelle „Externe Werkzeuge“ und hier nachgetragen.
