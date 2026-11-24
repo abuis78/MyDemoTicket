@@ -265,12 +265,15 @@ TOOLS = [
         "name": "add_comment",
         "title": "Add comment or work note",
         "description": "Add a journal entry to a ticket. type comment (default) is visible to the requester; "
-                       "work_note is internal and never shown to requesters.",
+                       "work_note is internal and never shown to requesters; summary is an AI or resolution "
+                       "summary, visible like a comment and shown in the ticket's resolution report "
+                       "(requester tokens may only write comments).",
         "inputSchema": _schema({
             "number": NUMBER,
             "body": {"type": "string", "minLength": 1, "description": "Text of the comment or work note."},
-            "type": {"type": "string", "enum": ["comment", "work_note"], "default": "comment",
-                     "description": "comment (default, visible to the caller) or work_note (internal)."},
+            "type": {"type": "string", "enum": ["comment", "work_note", "summary"], "default": "comment",
+                     "description": "comment (default, visible to the caller), work_note (internal) or "
+                                    "summary (AI/resolution summary, visible to the caller)."},
             "author": {"type": "string", "minLength": 1, "maxLength": 64,
                        "description": "Optional real author on whose behalf you write, e.g. \"jdoe\" "
                                       "(1-64 characters, no control characters). The journal shows "
@@ -281,7 +284,7 @@ TOOLS = [
     {
         "name": "get_journal",
         "title": "Get ticket journal",
-        "description": "Return the ticket's journal, oldest first: comments, work notes and audit entries "
+        "description": "Return the ticket's journal, oldest first: comments, work notes, summaries and audit entries "
                        "(field changes with old/new values), each with actor, source and timestamp.",
         "inputSchema": _schema({"number": NUMBER}, ["number"]),
         "annotations": dict(READ_ONLY, title="Get ticket journal"),

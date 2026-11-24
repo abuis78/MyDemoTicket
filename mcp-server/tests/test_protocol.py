@@ -76,6 +76,8 @@ class ProtocolTests(unittest.TestCase):
                          ["new", "in_progress", "on_hold", "resolved", "closed", "cancelled"])
         self.assertEqual(by_name["list_tickets"]["inputSchema"]["properties"]["limit"]["maximum"], 100)
         self.assertEqual(by_name["create_ticket"]["inputSchema"]["required"], ["short_description"])
+        self.assertEqual(by_name["add_comment"]["inputSchema"]["properties"]["type"]["enum"],
+                         ["comment", "work_note", "summary"])
 
     def test_unknown_method(self):
         response = self.mcp.request("resources/list")

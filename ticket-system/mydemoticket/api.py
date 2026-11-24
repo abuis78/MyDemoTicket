@@ -53,6 +53,9 @@ PRIORITIES = {1: "critical", 2: "high", 3: "moderate", 4: "low"}
 OPEN_STATES = ("new", "in_progress", "on_hold")
 UNASSIGNED_TEAM = "(none)"
 FIELD_TYPES = ("string", "number", "boolean", "choice", "date")
+# journal entry types writable via POST /tickets/{number}/comments; summary = AI or resolution
+# summary, visible like a comment, but only agents, admins and integrations may write it
+COMMENT_TYPES = ("comment", "work_note", "summary")
 
 TICKET_WRITABLE = (
     "short_description", "description", "state", "priority", "assignment_group",
@@ -850,8 +853,8 @@ class Api:
         tid = self._tid(ctx)
         row = self._readable_ticket(ctx, number)
         kind = body.get("type", "comment")
-        if kind not in ("comment", "work_note"):
-            raise ApiError(422, "'type' must be 'comment' or 'work_note'")
+        if kind not in COMMENT_TYPES:
+            raise ApiError(422, "'type' must be 'comment', 'work_note' or 'summary'")
         unknown = set(body) - {"body", "type", "author"}
         if unknown:
             raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])

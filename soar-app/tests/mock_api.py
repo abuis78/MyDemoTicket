@@ -156,7 +156,7 @@ class MockTicketAPI(object):
                                     "at": "2026-11-24T12:00:00Z"})
                 return 200, entries
             if parts[2:] == ["comments"] and method == "POST":
-                if body.get("type") not in ("comment", "work_note"):
+                if body.get("type") not in ("comment", "work_note", "summary"):
                     return 422, {"error": "invalid type"}
                 author = body.get("author")
                 if author is not None:

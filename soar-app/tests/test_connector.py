@@ -77,6 +77,18 @@ class TestCreateTicket(ConnectorTestBase):
         self.assertEqual(body["priority"], 2)
         self.assertTrue(r.get_summary()["ticket_number"].startswith("TKT"))
 
+    def test_es_investigation_id_in_external_refs(self):
+        _, r = self.run_action("create_ticket", {"short_description": "x", "es_finding_id": "notable-1",
+                                                 "es_investigation_id": "inv-7"}, container_id=42)
+        self.assertTrue(r.get_status(), r.get_message())
+        self.assertEqual(self.last_request()[4]["external_refs"],
+                         {"soar_container_id": 42, "es_finding_id": "notable-1", "es_investigation_id": "inv-7"})
+        self.assertEqual(r.get_data()[0]["external_refs"]["es_investigation_id"], "inv-7")
+
+    def test_empty_es_investigation_id_is_omitted(self):
+        self.run_action("create_ticket", {"short_description": "x", "es_investigation_id": ""})
+        self.assertNotIn("external_refs", self.last_request()[4])
+
     def test_invalid_custom_fields_json(self):
         _, r = self.run_action("create_ticket", {"short_description": "x", "custom_fields": "{broken"})
         self.assertFalse(r.get_status())
@@ -133,6 +145,17 @@ class TestUpdateTicket(ConnectorTestBase):
         self.assertEqual(body, {"assigned_to": "alice", "custom_fields": {"a": 1}, "priority": 1})
         self.assertEqual(r.get_data()[0]["assigned_to"], "alice")
 
+    def test_es_investigation_id_is_merged(self):
+        self.api.tickets["TKT0001001"]["external_refs"] = {"es_finding_id": "notable-1"}
+        _, r = self.run_action("update_ticket", {"number": "TKT0001001", "es_investigation_id": "inv-7"})
+        self.assertTrue(r.get_status(), r.get_message())
+        self.assertEqual(self.last_request()[4], {"external_refs": {"es_investigation_id": "inv-7"}})
+        self.assertEqual(r.get_data()[0]["external_refs"], {"es_finding_id": "notable-1", "es_investigation_id": "inv-7"})
+        _, r = self.run_action("update_ticket", {"number": "TKT0001001", "es_finding_id": "notable-2",
+                                                 "es_investigation_id": "inv-8"})
+        self.assertEqual(self.last_request()[4], {"external_refs": {"es_finding_id": "notable-2",
+                                                                    "es_investigation_id": "inv-8"}})
+
     def test_nothing_to_update(self):
         _, r = self.run_action("update_ticket", {"number": "TKT0001001"})
         self.assertFalse(r.get_status())
@@ -184,6 +207,16 @@ class TestAddComment(ConnectorTestBase):
     def test_invalid_type(self):
         _, r = self.run_action("add_comment", {"number": "TKT0001001", "body": "hi", "type": "email"})
         self.assertFalse(r.get_status())
+        self.assertIn("comment, work_note, summary", r.get_message())
+        self.assertEqual(self.api.requests, [])
+
+    def test_summary_with_author(self):
+        _, r = self.run_action("add_comment", {"number": "TKT0001001", "body": "Root cause: phishing\nFixed.",
+                                               "type": "summary", "author": "ai-assistant"})
+        self.assertTrue(r.get_status(), r.get_message())
+        self.assertEqual(self.last_request()[4], {"body": "Root cause: phishing\nFixed.", "type": "summary",
+                                                  "author": "ai-assistant"})
+        self.assertEqual((r.get_data()[0]["type"], r.get_summary()["type"]), ("summary", "summary"))
 
     def test_author_is_sent_and_returned(self):
         _, r = self.run_action("add_comment", {"number": "TKT0001001", "body": "hi", "author": "jdoe"})

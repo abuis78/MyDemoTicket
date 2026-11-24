@@ -129,6 +129,15 @@ class ToolTests(unittest.TestCase):
         journal = self.ok("get_journal", {"number": number})["items"]
         self.assertEqual([e["author"] for e in journal if e["type"] == "comment"], ["jdoe", None])
 
+    def test_add_summary(self):
+        number = self.create(short_description="summary-probe")["number"]
+        entry = self.ok("add_comment", {"number": number, "body": "Root cause: phishing\nResolved.",
+                                        "type": "summary", "author": "ai-assistant"})
+        self.assertEqual((entry["type"], entry["author"], entry["actor"]), ("summary", "ai-assistant", "soar"))
+        journal = self.ok("get_journal", {"number": number})["items"]
+        self.assertEqual([(e["type"], e["body"]) for e in journal if e["type"] == "summary"],
+                         [("summary", "Root cause: phishing\nResolved.")])
+
     def test_list_custom_fields(self):
         fields = self.ok("list_custom_fields")
         names = set(f["name"] for f in fields["items"])

@@ -6,7 +6,7 @@
     "package_name": "phantom_mydemoticket",
     "type": "ticketing",
     "license": "Copyright (c) 2026 SOC Games Demo",
-    "app_version": "1.1.0",
+    "app_version": "1.2.0",
     "product_vendor": "SOC Games Demo",
     "product_name": "MyDemoTicket",
     "product_version_regex": ".*",
@@ -139,6 +139,12 @@
                     "contains": [
                         "splunk notable event id"
                     ]
+                },
+                "es_investigation_id": {
+                    "description": "Splunk ES investigation ID (stored in external_refs.es_investigation_id)",
+                    "data_type": "string",
+                    "required": false,
+                    "order": 8
                 }
             },
             "output": [
@@ -184,6 +190,10 @@
                     "contains": [
                         "splunk notable event id"
                     ]
+                },
+                {
+                    "data_path": "action_result.parameter.es_investigation_id",
+                    "data_type": "string"
                 },
                 {
                     "data_path": "action_result.data.*.number",
@@ -250,6 +260,10 @@
                     "contains": [
                         "splunk notable event id"
                     ]
+                },
+                {
+                    "data_path": "action_result.data.*.external_refs.es_investigation_id",
+                    "data_type": "string"
                 },
                 {
                     "data_path": "action_result.data.*.created_at",
@@ -393,6 +407,10 @@
                     ]
                 },
                 {
+                    "data_path": "action_result.data.*.external_refs.es_investigation_id",
+                    "data_type": "string"
+                },
+                {
                     "data_path": "action_result.data.*.created_at",
                     "data_type": "string"
                 },
@@ -524,6 +542,12 @@
                     "contains": [
                         "splunk notable event id"
                     ]
+                },
+                "es_investigation_id": {
+                    "description": "Splunk ES investigation ID (merged into external_refs.es_investigation_id)",
+                    "data_type": "string",
+                    "required": false,
+                    "order": 11
                 }
             },
             "output": [
@@ -584,6 +608,10 @@
                     "contains": [
                         "splunk notable event id"
                     ]
+                },
+                {
+                    "data_path": "action_result.parameter.es_investigation_id",
+                    "data_type": "string"
                 },
                 {
                     "data_path": "action_result.data.*.number",
@@ -650,6 +678,10 @@
                     "contains": [
                         "splunk notable event id"
                     ]
+                },
+                {
+                    "data_path": "action_result.data.*.external_refs.es_investigation_id",
+                    "data_type": "string"
                 },
                 {
                     "data_path": "action_result.data.*.created_at",
@@ -825,6 +857,10 @@
                     ]
                 },
                 {
+                    "data_path": "action_result.data.*.external_refs.es_investigation_id",
+                    "data_type": "string"
+                },
+                {
                     "data_path": "action_result.data.*.created_at",
                     "data_type": "string"
                 },
@@ -893,13 +929,14 @@
                     "order": 1
                 },
                 "type": {
-                    "description": "Entry type",
+                    "description": "Entry type: comment (visible to the caller), work_note (internal) or summary (AI/resolution summary, visible to the caller)",
                     "data_type": "string",
                     "required": false,
                     "order": 2,
                     "value_list": [
                         "comment",
-                        "work_note"
+                        "work_note",
+                        "summary"
                     ],
                     "default": "comment"
                 },
@@ -1183,6 +1220,10 @@
                     "contains": [
                         "splunk notable event id"
                     ]
+                },
+                {
+                    "data_path": "action_result.data.*.external_refs.es_investigation_id",
+                    "data_type": "string"
                 },
                 {
                     "data_path": "action_result.data.*.created_at",

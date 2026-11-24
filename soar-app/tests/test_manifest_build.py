@@ -37,7 +37,7 @@ class TestManifest(unittest.TestCase):
         self.assertEqual(a["min_phantom_version"], "6.0.0")
         self.assertEqual(a["main_module"], "mydemoticket_connector.py")
         self.assertEqual(a["python_version"], "3.13")
-        self.assertEqual(a["app_version"], "1.1.0")
+        self.assertEqual(a["app_version"], "1.2.0")
         for key in ("main_module", "logo", "logo_dark"):
             self.assertTrue(os.path.isfile(os.path.join(support.APP_DIR, a[key])), key)
 
@@ -82,6 +82,17 @@ class TestManifest(unittest.TestCase):
         paths = {a: [o["data_path"] for o in acts[a]["output"]] for a in ("add_comment", "get_journal")}
         self.assertIn("action_result.data.*.author", paths["add_comment"])
         self.assertIn("action_result.data.*.author", paths["get_journal"])
+
+    def test_new_parameters_1_2_0(self):
+        acts = {a["identifier"]: a for a in self.app["actions"]}
+        ctype = acts["add_comment"]["parameters"]["type"]
+        self.assertEqual((ctype["value_list"], ctype["default"]), (["comment", "work_note", "summary"], "comment"))
+        for ident in ("create_ticket", "update_ticket"):
+            param = acts[ident]["parameters"]["es_investigation_id"]
+            self.assertEqual((param["data_type"], param["required"]), ("string", False), ident)
+        for ident in ("create_ticket", "get_ticket", "update_ticket", "set_state", "list_tickets"):
+            paths = [o["data_path"] for o in acts[ident]["output"]]
+            self.assertIn("action_result.data.*.external_refs.es_investigation_id", paths, ident)
 
     def test_no_secrets_in_manifest(self):
         self.assertNotIn("default", self.app["configuration"]["api_token"])
