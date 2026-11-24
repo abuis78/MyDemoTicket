@@ -537,13 +537,14 @@ Each event results in (header `ph-auth-token`, JSON):
             "assignmentGroup": "SOC L1", "assignedTo": "analyst1", "event": "ticket.state_changed",
             "changes": "{\"state\": {...}}", "comment": "", "commentAuthor": "", "commentType": "",
             "customFields": "{...}", "esFindingId": "finding-placeholder", "esInvestigationId": "",
-            "source": "web", "tenant": "soc-games"}}
+            "source": "web", "actor": "analyst1", "tenant": "soc-games"}}
    ```
    `changes` and `customFields` are JSON strings. For `ticket.commented`,
    `comment` is the body, `commentAuthor` the optional author (else `""`) and
    `commentType` the journal type (`comment`, `work_note`, `summary`; else `""`).
    `esFindingId` / `esInvestigationId` come from `external_refs.es_finding_id` /
-   `external_refs.es_investigation_id` (`""` if not set). `cef.source` is an addition for
+   `external_refs.es_investigation_id` (`""` if not set). `cef.actor` is the username that
+   triggered the event (the token or session user, as `actor` in the generic payload). `cef.source` is an addition for
    playbook-side loop checks, `cef.tenant` is the tenant slug of the ticket. The
    container name stays `<number>: <short description>`.
 

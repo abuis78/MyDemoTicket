@@ -67,7 +67,7 @@ stores the real person separately; the ticket UI shows `jdoe (via soar)`. Pushed
 
 **Summary:** `add comment` with `type = summary` writes an AI or resolution summary. It is visible
 like a comment (also to the requester) and shown in the ticket UI tab "Resolution report" (newest
-summary first, older ones collapsed). Pushed artifacts carry `commentType = summary`.
+summary first, older ones collapsed). Pushed artifacts carry `commentType = summary` (plus `commentAuthor` and `actor`, the API user).
 Needs ticket system with journal type `summary`.
 
 **ES investigation:** `es_investigation_id` is stored in `external_refs.es_investigation_id`

@@ -85,6 +85,7 @@ class SummaryTest(ServerTestCase):
             self.assertEqual([(a["cef"]["comment"], a["cef"]["commentAuthor"], a["cef"]["commentType"])
                               for a in artifacts],
                              [("AI summary", "jdoe", "summary"), ("plain", "", "comment")])
+            self.assertEqual({a["cef"]["actor"] for a in artifacts}, {"admin"})
         finally:
             generic.close()
             soar_rx.close()
@@ -115,6 +116,11 @@ class EsInvestigationIdCefTest(ServerTestCase):
             artifacts = [json.loads(r["body"]) for r in soar_rx.requests if r["path"].endswith("/rest/artifact")]
             self.assertEqual([(a["name"], a["cef"]["esInvestigationId"]) for a in artifacts],
                              [("ticket.created", ""), ("ticket.updated", "inv-0815")])
+            analyst = self.client_for("analyst1")
+            self.assertEqual(analyst.patch("/tickets/" + t["number"], {"priority": 2}).status, 200)
+            self.wait_webhooks()
+            artifacts = [json.loads(r["body"]) for r in soar_rx.requests if r["path"].endswith("/rest/artifact")]
+            self.assertEqual([a["cef"]["actor"] for a in artifacts], ["admin", "admin", "analyst1"])
         finally:
             soar_rx.close()
 

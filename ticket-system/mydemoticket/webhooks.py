@@ -274,6 +274,7 @@ class WebhookDispatcher:
                 "esFindingId": str(refs.get("es_finding_id") or ""),
                 "esInvestigationId": str(refs.get("es_investigation_id") or ""),
                 "source": payload.get("source") or "",
+                "actor": payload.get("actor") or "",
                 "tenant": payload.get("tenant") or "",
             },
             "run_automation": True,
