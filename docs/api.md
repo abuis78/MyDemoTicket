@@ -13,9 +13,11 @@ export TOKEN=...   # an API token, see "Tokens" below; never commit it
 | Topic | Rule |
 |---|---|
 | Auth | `Authorization: Bearer $TOKEN` (API) or session cookie + `X-CSRF-Token` (web UI) |
+| Tenant | Every request works in exactly one tenant, see [Tenants](#tenants-multi-tenancy). Header `X-MyDemoTicket-Tenant: <slug>` selects it for `platform_admin`; for all other users it is optional and must name their own tenant |
+| Request id | Every response carries `X-Request-Id` (UUID4); the same id is in the audit log |
 | Source | Optional header `X-MyDemoTicket-Source: <text>` (max 64 chars). Stored as `source` on every journal/audit entry of the request and sent in webhooks. Default: `api` (token) or `web` (session). SOAR should send `soar`. |
 | Timestamps | ISO-8601 UTC with `Z`, second precision, e.g. `2026-11-24T14:38:16Z` |
-| Errors | `{"error": "<message>"}` with `400` bad JSON, `401` unauthenticated, `403` forbidden, `404` not found, `405` method not allowed, `409` conflict / invalid state transition, `413` body > 1 MiB, `422` validation error |
+| Errors | `{"error": "<message>"}` with `400` bad JSON, `401` unauthenticated, `403` forbidden (also `tenant mismatch`, `tenant inactive`), `404` not found (also objects of other tenants), `405` method not allowed, `409` conflict / invalid state transition, `413` body > 1 MiB, `422` validation error |
 | Lists | `GET /tickets` returns `{"items": [...], "total": n}`; all other list endpoints return a plain JSON array |
 
 ## Objects
@@ -87,12 +89,83 @@ for merged objects, or `created` for the creation entry. `old`/`new` keep their 
 
 ## Roles
 
+All roles except `platform_admin` belong to exactly one tenant and only ever see
+that tenant's data.
+
 | Role | Summary |
 |---|---|
-| `admin` | everything, including users, teams, custom fields, webhooks |
-| `agent` | reads all tickets; changes/comments only tickets of own team, assigned to self, or fully unassigned (else `403`); may read `/users` and `/teams` |
-| `integration` | like agent, but may change all tickets (for SOAR) |
+| `platform_admin` | all tenants: manages tenants (`/tenants`) and platform admins, and has `admin` rights in the tenant of the request (header or session, default `soc-games`); has no tenant of its own |
+| `admin` | tenant admin: everything inside the own tenant, including users, teams, custom fields, webhooks; cannot grant `platform_admin` |
+| `agent` | reads all tickets of the tenant; changes/comments only tickets of own team, assigned to self, or fully unassigned (else `403`); may read `/users` and `/teams` |
+| `integration` | like agent, but may change all tickets of the tenant (for SOAR) |
 | `requester` | creates/reads/comments own tickets (`caller`); may only set `state: cancelled` on own tickets; never sees work notes; `403` on `/users`, `/teams`, admin endpoints |
+
+## Tenants (multi-tenancy)
+
+Tenant object:
+
+```json
+{"slug": "soc-games", "name": "SOC Games", "active": true, "soar_url": "https://soar.soc-games.com",
+ "splunk_index": null, "default": true, "created_at": "...", "updated_at": "..."}
+```
+
+`slug` matches `[a-z0-9-]{2,32}` and is read-only. `soar_url` is an optional
+http(s) URL, `splunk_index` an optional override of the audit index (`null` = the
+default index from `MYDEMOTICKET_HEC_INDEX`, normally `mydemoticket` for all
+tenants). The default tenant `soc-games` exists from the first start (or the
+migration) and can neither be deactivated (`409`) nor deleted (there is no DELETE).
+
+### Tenant context of a request
+
+| Caller | Tenant of the request |
+|---|---|
+| any non-platform user | own tenant; header with another slug → `403 {"error": "tenant mismatch"}` |
+| `platform_admin` | header `X-MyDemoTicket-Tenant`, else the tenant stored in the web session, else `soc-games`; unknown slug → `404 {"error": "tenant not found"}` |
+
+* Users of a deactivated tenant get `403 {"error": "tenant inactive"}` for login
+  (after a correct password), sessions and tokens.
+* Objects of other tenants (tickets, journal, comments, teams, custom fields,
+  webhooks, deliveries, users, tokens) are `404`, never `403`. Lists only contain
+  the request's tenant. A role check still comes first: an agent calling an admin
+  endpoint gets `403` regardless of the object.
+* `assignment_group`, `assigned_to`, `caller`, team members and custom field
+  values are validated against the request's tenant (`422` otherwise).
+* Ticket numbers are one global sequence across all tenants (`TKT0001001`, ...),
+  so SOAR can keep using them as `source_data_identifier`.
+* Usernames are globally unique.
+
+```bash
+# platform admin works in tenant acme
+curl -s -H "Authorization: Bearer $TOKEN" -H "X-MyDemoTicket-Tenant: acme" "$MDT/tickets"
+```
+
+### `GET /tenants`, `POST /tenants`, `GET/PATCH /tenants/{slug}` (platform_admin)
+
+| Endpoint | Body / result |
+|---|---|
+| `GET /tenants` | array of tenant objects |
+| `POST /tenants` | `{"slug", "name", "active"?, "soar_url"?, "splunk_index"?, "seed"?}` → `201`; `409` if the slug exists. `"seed": true` creates the teams `SOC L1`, `SOC L2` and the four standard custom fields in the new tenant |
+| `GET /tenants/{slug}` | tenant object, `404` if unknown |
+| `PATCH /tenants/{slug}` | any of `name`, `active`, `soar_url`, `splunk_index` → `200` |
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"slug": "acme", "name": "ACME Corp", "seed": true}' $MDT/tenants
+curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"active": false}' $MDT/tenants/acme
+```
+
+### `POST /auth/tenant` (platform_admin, web session)
+
+```bash
+curl -s -b cookies.txt -X POST -H "X-CSRF-Token: $CSRF" -H "Content-Type: application/json" \
+  -d '{"tenant": "acme"}' $MDT/auth/tenant
+# 200 /me object with "active_tenant": {"slug": "acme", ...}
+```
+
+Stores the active tenant in the session (CSRF required like every UI write).
+Other roles → `403`; token requests → `400` (use the header); unknown slug → `404`.
+A new login starts in `soc-games` again.
 
 ---
 
@@ -109,9 +182,14 @@ curl -s $MDT/health
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" $MDT/me
-# {"username": "soar", "display_name": "...", "email": "...", "role": "integration", "active": true,
-#  "teams": [], "has_password": true, "created_at": "..."}   (+ "csrf_token" for session auth)
+# {"username": "soar", "display_name": "...", "email": "...", "role": "integration", "tenant": {"slug": "soc-games",
+#  "name": "SOC Games"}, "active": true, "teams": [], "has_password": true, "created_at": "..."}
+#  (+ "csrf_token" for session auth)
 ```
+
+`tenant` is the tenant of the request (for normal users their own). For a
+`platform_admin`, `/me` additionally returns `active_tenant` (`{slug, name}`, same
+as `tenant`) and `tenants` (all tenant objects).
 
 ### `POST /auth/login` / `POST /auth/logout` (web UI)
 
@@ -210,6 +288,9 @@ Definition: `{"name", "label", "type", "choices", "required", "created_at"}`;
 `choice` (needs `choices`) or `date` (`YYYY-MM-DD`). Seeded: `mitre_technique`
 (string), `affected_host` (string), `risk_score` (number), `incident_type`
 (choice: malware, phishing, data_exfiltration, other).
+Definitions belong to a tenant; `name` is unique per tenant and ticket values are
+validated against the definitions of the ticket's tenant. "admin" below means
+tenant admin or platform admin (in the request's tenant).
 
 | Endpoint | Role | Result |
 |---|---|---|
@@ -225,13 +306,23 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 
 ## Users & tokens (admin)
 
-User object: `{"username", "display_name", "email", "role", "active", "teams", "has_password", "created_at"}`.
+User object: `{"username", "display_name", "email", "role", "tenant", "active", "teams", "has_password", "created_at"}`
+(`tenant` is the slug, `null` for platform admins).
 
 | Endpoint | Body / result |
 |---|---|
-| `GET /users` | array (also allowed for agent/integration) |
-| `POST /users` | `{"username", "role", "display_name"?, "email"?, "password"? (min 8), "teams"?, "active"?}` → `201` |
-| `PATCH /users/{username}` | any of `display_name`, `email`, `role`, `active`, `password`, `teams` (replaces) → `200`; demoting/deactivating the last admin → `409` |
+| `GET /users` | users of the request's tenant (also allowed for agent/integration); a platform admin also sees the platform admins |
+| `POST /users` | `{"username", "role", "tenant"?, "display_name"?, "email"?, "password"? (min 8), "teams"?, "active"?}` → `201` |
+| `PATCH /users/{username}` | any of `display_name`, `email`, `role`, `active`, `password`, `teams` (replaces) → `200`; demoting/deactivating the last active platform admin → `409`; changing a role to or from `platform_admin` → `422` |
+
+Rules for `POST /users`:
+
+* `platform_admin` caller: `tenant` (slug) is required (`422` if missing or
+  unknown), except for `"role": "platform_admin"`, which must not have a tenant
+  or teams (`422`).
+* tenant `admin` caller: the user is always created in the own tenant; a
+  different `tenant` → `403 tenant mismatch`; `role: platform_admin` → `403`.
+* `teams` must be teams of the target tenant (`422`).
 | `GET /users/{username}/tokens` | `[{"id", "name", "created_at", "last_used_at"}]` |
 | `POST /users/{username}/tokens` | `{"name"?}` → `201` `{"id", "name", "username", "token", ...}` – the plaintext `token` is returned **only once** |
 | `DELETE /users/{username}/tokens/{id}` | `204`, token revoked |
@@ -241,7 +332,48 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   -d '{"name": "soar-prod"}' $MDT/users/soar/tokens
 ```
 
+## Reports
+
+### `GET /reports/summary?since=<ISO>` (admin, agent, platform_admin in the request's tenant)
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" "$MDT/reports/summary?since=2026-11-01T00:00:00Z"
+```
+
+```json
+{"tenant": "soc-games", "generated_at": "2026-11-24T15:00:00Z", "tickets_total": 4, "open_count": 2,
+ "by_state": {"new": 1, "in_progress": 1, "on_hold": 0, "resolved": 1, "closed": 1, "cancelled": 0},
+ "by_priority": {"1": 1, "2": 1, "3": 1, "4": 1},
+ "by_team": {"SOC L1": 2, "SOC L2": 1, "IT Ops": 0, "(none)": 1},
+ "created_last_7d": 2, "resolved_last_7d": 1, "mttr_hours": 20.0}
+```
+
+* `since` (optional) limits all numbers to tickets created at or after it (`422` if not ISO-8601).
+* `open_count` = `new` + `in_progress` + `on_hold`. `by_state`/`by_priority` list all
+  values, `by_team` all teams of the tenant plus `(none)` for tickets without group.
+* `created_last_7d` / `resolved_last_7d` count `created_at` / `resolved_at` within
+  the last 7 days.
+* `mttr_hours`: mean of `resolved_at − created_at` over tickets that have a
+  `resolved_at` (resolved or closed), rounded to 2 decimals; `null` if there are none.
+* `requester` and `integration` → `403`.
+
+## Audit
+
+Every action is written to the audit log (local file + optional Splunk HEC), see
+[logging.md](logging.md). Each event carries the `request_id` from the
+`X-Request-Id` response header.
+
+### `GET /audit/status` (admin, platform_admin)
+
+```bash
+curl -s -H "Authorization: Bearer $TOKEN" $MDT/audit/status
+# {"hec_enabled": true, "queued": 0, "sent": 120, "failed": 0, "dropped": 0, "local_written": 120,
+#  "last_error": null, "last_success_at": "..."}
+```
+
 ## Teams (admin)
+
+Team names are unique per tenant; members must be users of the same tenant (`422`).
 
 | Endpoint | Body / result |
 |---|---|
@@ -256,6 +388,8 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 ```
 
 ## Webhooks (admin)
+
+Webhooks belong to the tenant of the request and only fire for tickets of that tenant.
 
 Webhook object: `{"id", "name", "type", "url", "events", "active", "soar_label", "verify_tls", "has_secret", "created_at"}`
 (the secret is never returned).
@@ -289,6 +423,7 @@ Delivery: `POST <url>` with headers `X-MyDemoTicket-Event`, `X-MyDemoTicket-Deli
   "event": "ticket.state_changed",
   "delivery_id": "1b4e28ba-2fa1-11d2-883f-0016d3cca427",
   "timestamp": "2026-11-24T14:45:00Z",
+  "tenant": "soc-games",
   "source": "web",
   "actor": "analyst1",
   "ticket": {"number": "TKT0001001", "...": "full ticket object"},
@@ -333,10 +468,11 @@ Each event results in (header `ph-auth-token`, JSON):
     "cef": {"ticketNumber": "TKT0001001", "ticketState": "resolved", "ticketPriority": 2,
             "assignmentGroup": "SOC L1", "assignedTo": "analyst1", "event": "ticket.state_changed",
             "changes": "{\"state\": {...}}", "comment": "", "customFields": "{...}",
-            "esFindingId": "finding-placeholder", "source": "web"}}
+            "esFindingId": "finding-placeholder", "source": "web", "tenant": "soc-games"}}
    ```
    `changes` and `customFields` are JSON strings. `cef.source` is an addition for
-   playbook-side loop checks.
+   playbook-side loop checks, `cef.tenant` is the tenant slug of the ticket. The
+   container name stays `<number>: <short description>`.
 
 Events whose `source` is `soar` (case-insensitive) are **not** delivered to
 `soar` webhooks (logged as `skipped`) to avoid loops.
