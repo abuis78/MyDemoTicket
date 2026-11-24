@@ -36,7 +36,7 @@ class TestManifest(unittest.TestCase):
         self.assertEqual(a["type"], "ticketing")
         self.assertEqual(a["min_phantom_version"], "6.0.0")
         self.assertEqual(a["main_module"], "mydemoticket_connector.py")
-        self.assertTrue(a["python_version"].startswith("3"))
+        self.assertEqual(a["python_version"], "3.13")
         for key in ("main_module", "logo", "logo_dark"):
             self.assertTrue(os.path.isfile(os.path.join(support.APP_DIR, a[key])), key)
 
