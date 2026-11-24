@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 
 # --- configuration -------------------------------------------------------------------------
 MYDEMOTICKET_ASSET = "mydemoticket"     # name of the MyDemoTicket asset in SOAR
-ASSIGNMENT_GROUP = "SOC"
+ASSIGNMENT_GROUP = "SOC L1"
 CATEGORY = "security_incident"
 
 URGENCY_TO_PRIORITY = {"critical": 1, "high": 2, "medium": 3, "low": 4, "informational": 4}
