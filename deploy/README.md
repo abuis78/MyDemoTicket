@@ -7,6 +7,24 @@ and proxies to the app on `127.0.0.1:8080`, run by systemd as user
 > Creating AWS resources costs money (t4g.nano + 8 GB gp3 + public IPv4 ≈ 8 USD/month,
 > estimate). Get an explicit go before step 1.
 
+## Quick path: one command (deploy/aws/deploy.sh)
+
+```bash
+aws sso login --profile janus-env2
+export AWS_PROFILE=janus-env2
+EXTRA_TAGS="splunkit_environment_type=non-prd,splunkit_data_classification=private" deploy/aws/deploy.sh --dry-run
+EXTRA_TAGS="splunkit_environment_type=non-prd,splunkit_data_classification=private" deploy/aws/deploy.sh
+```
+
+Creates (all named `mydemoticket`): IAM role + instance profile (SSM access, read `/mydemoticket/*` and the
+bundle), security group (80/443, no SSH), private S3 bucket with the code bundle, SSM parameters
+(admin password + token as SecureString, from the macOS keychain service `mydemoticket`), one `t4g.nano`.
+On every boot `deploy/aws/boot.sh` fetches the bundle, derives `<ip>.sslip.io` from the current public IP and
+runs `install.sh --domain ticket.soc-games.com,<ip>.sslip.io`. Caddy runs as Docker container `caddy:2.8.4`.
+Login: user `admin`, password via `security find-generic-password -s mydemoticket -a admin-password -w`.
+New code: run `deploy.sh` again (uploads the bundle), then reboot the instance.
+`deploy/aws/deploy.sh --uninstall` removes everything (data on the instance is lost).
+
 ## Files
 
 | File | Purpose |
