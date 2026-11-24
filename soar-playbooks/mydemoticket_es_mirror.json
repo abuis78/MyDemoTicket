@@ -4,7 +4,7 @@
     "category": "MyDemoTicket",
     "coa": {
         "data": {
-            "description": "Mirror MyDemoTicket state/comment/owner to Splunk ES (update event)",
+            "description": "Mirror MyDemoTicket state/owner (update event, update finding or investigation) and comments/work notes (add finding or investigation note) to Splunk ES 8",
             "edges": [
                 {
                     "id": "port_0_to_port_1",
