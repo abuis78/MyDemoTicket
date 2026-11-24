@@ -79,6 +79,20 @@ Not covered: a real Splunk SOAR or Splunk ES instance, the playbooks' runtime
 behaviour (only their state → ES status mapping), and the browser UI itself
 (the web path is exercised via the same session/CSRF API calls the UI makes).
 
+## MCP server
+
+`mcp-server/` lets Claude Code and Claude Desktop use the ticket system through the
+Model Context Protocol (stdio, standard library only): list, read, create and update
+tickets, set states, add comments/work notes, read journals. Changes appear in the
+journal with source `mcp`.
+
+```bash
+security add-generic-password -U -s mydemoticket -a mcp-api-token -w   # store an API token
+mcp-server/install.sh                                                  # register in Claude Code
+```
+
+Details, Claude Desktop setup and tools: [mcp-server/README.md](mcp-server/README.md).
+
 ## Structure
 
 ```
@@ -89,10 +103,12 @@ docs/api.md                   REST API reference with curl examples
 docs/mockups/                 static HTML mockups of the UI
 deploy/                       systemd + Caddy installer for ticket.soc-games.com (EC2)
 soar-app/                     Splunk SOAR app for MyDemoTicket
+mcp-server/                   MCP server for Claude Code / Claude Desktop (stdio)
 tests/e2e/                    end-to-end tests ticket system <-> SOAR app (scripts/e2e.sh)
 ```
 
 ## Moving to another machine
 
 Clone the repo and run the quick start. State lives only in the data directory;
-copy it to keep tickets and users.
+copy it to keep tickets and users. For the MCP server, store the token in the new
+machine's keychain and run `mcp-server/install.sh` again (it registers an absolute path).
