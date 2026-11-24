@@ -1,9 +1,13 @@
 # MyDemoTicket – SOAR Playbooks
 
-> **Status: not tested against a real Splunk SOAR or Splunk ES instance.**
-> Only checked with `python3 -m py_compile` (also part of `soar-app/tests`). Asset names, the
-> Splunk app action parameters and the import of the `.json` files must be verified on a real
-> system before use.
+> **Status (2026-11-24):** `mydemoticket_es_mirror` is live-tested on Splunk SOAR 8.8 (Splunk Cloud) with
+> Splunk ES: imported via `POST /rest/import_playbook`, active on label `mydemoticket`, a ticket change
+> set the linked notable from New to In Progress automatically. `mydemoticket_ticket_from_es` is only
+> syntax-checked (`python3 -m py_compile`, part of `soar-app/tests`).
+>
+> Import note: SOAR only validates and activates an imported playbook when `coa.python_version`
+> ("3.13"), `coa.schema` and `coa.version` are set inside the `coa` block. Without them the import
+> stays in draft mode ("Python linting and validation could not be run") and cannot be activated.
 
 Both playbooks are classic Python playbooks (`on_start`, `phantom.collect2`, `phantom.act`,
 `phantom.add_note`). The `.json` files only carry metadata (labels, trigger, type) and a minimal
