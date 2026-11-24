@@ -1,0 +1,87 @@
+<form version="1.1" theme="dark">
+  <label>MyDemoTicket - Ticket report</label>
+  <description>Tickets created and resolved per day, state distribution and MTTR, per tenant. Derived from ticket.create and ticket.state_change audit events (details.from / details.to).</description>
+  <search id="tickets">
+    <query><![CDATA[(index=mdt_* OR index=main) sourcetype="mydemoticket:audit" tenant="$tenant$" (action="ticket.create" OR action="ticket.state_change")
+| fields _time tenant action object_id details.from details.to]]></query>
+    <earliest>$time.earliest$</earliest>
+    <latest>$time.latest$</latest>
+  </search>
+  <fieldset submitButton="false" autoRun="true">
+    <input type="dropdown" token="tenant" searchWhenChanged="true">
+      <label>Tenant</label>
+      <choice value="*">All</choice>
+      <default>*</default>
+      <initialValue>*</initialValue>
+      <fieldForLabel>tenant</fieldForLabel>
+      <fieldForValue>tenant</fieldForValue>
+      <search>
+        <query><![CDATA[(index=mdt_* OR index=main) sourcetype="mydemoticket:audit" | stats count by tenant | sort tenant]]></query>
+        <earliest>-30d@d</earliest>
+        <latest>now</latest>
+      </search>
+    </input>
+    <input type="time" token="time" searchWhenChanged="true">
+      <label>Time range</label>
+      <default>
+        <earliest>-30d@d</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+  </fieldset>
+  <row>
+    <panel>
+      <title>Tickets created / resolved per day</title>
+      <chart>
+        <search base="tickets">
+          <query><![CDATA[| eval kind=case(action=="ticket.create","created", action=="ticket.state_change" AND 'details.to'=="resolved","resolved")
+| where isnotnull(kind)
+| timechart span=1d count by kind]]></query>
+        </search>
+        <option name="charting.chart">column</option>
+        <option name="charting.legend.placement">bottom</option>
+      </chart>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>State distribution (latest state per ticket)</title>
+      <chart>
+        <search base="tickets">
+          <query><![CDATA[| eval state=if(action=="ticket.create","new",'details.to')
+| stats latest(state) as state by tenant object_id
+| stats count by state]]></query>
+        </search>
+        <option name="charting.chart">pie</option>
+      </chart>
+    </panel>
+    <panel>
+      <title>Created / resolved per tenant</title>
+      <table>
+        <search base="tickets">
+          <query><![CDATA[| stats count(eval(action=="ticket.create")) as created count(eval(action=="ticket.state_change" AND 'details.to'=="resolved")) as resolved by tenant
+| sort - created]]></query>
+        </search>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>MTTR per tenant (create to first resolved/closed)</title>
+      <table>
+        <search base="tickets">
+          <query><![CDATA[| eval created_t=if(action=="ticket.create",_time,null()),
+       resolved_t=if(action=="ticket.state_change" AND in('details.to',"resolved","closed"),_time,null())
+| stats min(created_t) as created_t min(resolved_t) as resolved_t by tenant object_id
+| where isnotnull(created_t) AND isnotnull(resolved_t) AND resolved_t>=created_t
+| eval ttr=resolved_t-created_t
+| stats count as resolved_tickets avg(ttr) as mttr median(ttr) as median_ttr max(ttr) as max_ttr by tenant
+| foreach mttr median_ttr max_ttr [ eval <<FIELD>>=tostring(round('<<FIELD>>'),"duration") ]
+| sort tenant]]></query>
+        </search>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+</form>

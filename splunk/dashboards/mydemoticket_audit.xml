@@ -1,0 +1,110 @@
+<form version="1.1" theme="dark">
+  <label>MyDemoTicket - Audit</label>
+  <description>Audit trail of the MyDemoTicket ticket system (sourcetype mydemoticket:audit). Every search is filtered on the selected tenant; tenant roles only see their own index anyway.</description>
+  <search id="base">
+    <query><![CDATA[(index=mdt_* OR index=main) sourcetype="mydemoticket:audit" tenant="$tenant$"
+| fields _time tenant action actor role outcome object_type object_id source ip request_id details.*]]></query>
+    <earliest>$time.earliest$</earliest>
+    <latest>$time.latest$</latest>
+  </search>
+  <fieldset submitButton="false" autoRun="true">
+    <input type="dropdown" token="tenant" searchWhenChanged="true">
+      <label>Tenant</label>
+      <choice value="*">All</choice>
+      <default>*</default>
+      <initialValue>*</initialValue>
+      <fieldForLabel>tenant</fieldForLabel>
+      <fieldForValue>tenant</fieldForValue>
+      <search>
+        <query><![CDATA[(index=mdt_* OR index=main) sourcetype="mydemoticket:audit" | stats count by tenant | sort tenant]]></query>
+        <earliest>-30d@d</earliest>
+        <latest>now</latest>
+      </search>
+    </input>
+    <input type="time" token="time" searchWhenChanged="true">
+      <label>Time range</label>
+      <default>
+        <earliest>-24h@h</earliest>
+        <latest>now</latest>
+      </default>
+    </input>
+  </fieldset>
+  <row>
+    <panel>
+      <title>Actions over time per tenant</title>
+      <chart>
+        <search base="base">
+          <query><![CDATA[| timechart count by tenant]]></query>
+        </search>
+        <option name="charting.chart">column</option>
+        <option name="charting.chart.stackMode">stacked</option>
+        <option name="charting.legend.placement">bottom</option>
+      </chart>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>Ticket state changes</title>
+      <table>
+        <search base="base">
+          <query><![CDATA[| search action="ticket.state_change"
+| eval transition=coalesce('details.from',"?")." -> ".coalesce('details.to',"?")
+| stats count by tenant transition
+| sort - count]]></query>
+        </search>
+        <option name="count">10</option>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+    <panel>
+      <title>Failed logins and denied access</title>
+      <table>
+        <search base="base">
+          <query><![CDATA[| search (action="auth.login" outcome="failure") OR outcome="denied"
+| stats count latest(_time) as last_seen values(ip) as ip by tenant action actor outcome
+| eval last_seen=strftime(last_seen,"%Y-%m-%d %H:%M:%S")
+| sort - count]]></query>
+        </search>
+        <option name="count">10</option>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>Webhook deliveries by outcome</title>
+      <chart>
+        <search base="base">
+          <query><![CDATA[| search action="webhook.delivery" | timechart count by outcome]]></query>
+        </search>
+        <option name="charting.chart">line</option>
+        <option name="charting.legend.placement">bottom</option>
+      </chart>
+    </panel>
+    <panel>
+      <title>Top actors</title>
+      <table>
+        <search base="base">
+          <query><![CDATA[| stats count dc(action) as distinct_actions values(role) as role by tenant actor
+| sort - count
+| head 10]]></query>
+        </search>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+  <row>
+    <panel>
+      <title>Latest events</title>
+      <table>
+        <search base="base">
+          <query><![CDATA[| sort - _time
+| head 200
+| table _time tenant action outcome actor role object_type object_id source ip request_id]]></query>
+        </search>
+        <option name="count">20</option>
+        <option name="drilldown">none</option>
+      </table>
+    </panel>
+  </row>
+</form>

@@ -1,0 +1,23 @@
+# Example: one Splunk role per MyDemoTicket tenant. Each role can search ONLY its
+# own index -> hard separation enforced by Splunk, independent of dashboard filters.
+# Copy to $SPLUNK_HOME/etc/apps/<your_app>/local/authorize.conf on the search heads.
+# Do NOT let tenant roles inherit from roles with broader index access (e.g. admin).
+
+[role_mdt_soc_games]
+importRoles = user
+srchIndexesAllowed = mdt_soc_games
+srchIndexesDefault = mdt_soc_games
+# Belt and braces: also restrict on the indexed field.
+srchFilter = tenant::soc-games
+
+[role_mdt_usa_demo]
+importRoles = user
+srchIndexesAllowed = mdt_usa_demo
+srchIndexesDefault = mdt_usa_demo
+srchFilter = tenant::usa-demo
+
+# Platform operators: all MyDemoTicket indexes.
+[role_mdt_admin]
+importRoles = user
+srchIndexesAllowed = mdt_*
+srchIndexesDefault = mdt_*
