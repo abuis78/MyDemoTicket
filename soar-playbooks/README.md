@@ -15,7 +15,7 @@ Label: `mydemoticket`. Runs on new artifacts.
 1. Collects new artifacts with label `mydemoticket_event` (pushed by the ticket system).
 2. Ignores artifacts whose `cef.source` is `soar` (change came from SOAR – loop prevention).
 3. With `cef.esFindingId`: Splunk app action **update event** on asset `SPLUNK_ASSET`
-   (default `splunk_es`) with
+   (default `splunk`) with
    - `event_ids` = `esFindingId`
    - `integer_status` from `ticketState`: new→1 New, in_progress→2 In Progress, on_hold→3 Pending,
      resolved→4 Resolved, closed/cancelled→5 Closed
@@ -37,7 +37,7 @@ Label: `notable` (adjust to the label your Splunk app ingests ES notables with).
 ## Constants to set before import
 | File | Constant | Default |
 |---|---|---|
-| `mydemoticket_es_mirror.py` | `SPLUNK_ASSET` | `splunk_es` |
+| `mydemoticket_es_mirror.py` | `SPLUNK_ASSET` | `splunk` |
 | `mydemoticket_es_mirror.py` | `MIRROR_OWNER` | `True` |
 | `mydemoticket_ticket_from_es.py` | `MYDEMOTICKET_ASSET` | `mydemoticket` |
 | `mydemoticket_ticket_from_es.py` | `ASSIGNMENT_GROUP`, `CATEGORY` | `SOC`, `security_incident` |
