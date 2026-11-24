@@ -1,0 +1,12 @@
+# Rendered by deploy/install.sh - placeholders: @DOMAIN@ @PORT@
+# managed by mydemoticket
+@DOMAIN@ {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000"
+		-Server
+	}
+	# Caddy sets X-Forwarded-Proto=https, so the app marks session cookies Secure.
+	reverse_proxy 127.0.0.1:@PORT@
+	log
+}
