@@ -8,15 +8,25 @@ only (Python 3.9+): no third-party packages, no build step, no CDN.
 
 ```
 ticket-system/mydemoticket/
-  __main__.py   CLI: python3 -m mydemoticket --host --port --data-dir --no-seed
+  __main__.py   CLI: python3 -m mydemoticket --host --port --data-dir --no-seed --secure-cookies --quiet
   server.py     ThreadingHTTPServer, routing, auth (Bearer / session + CSRF), static files
-  api.py        REST handlers: tickets, journal, custom fields, users, teams, webhooks
+  api.py        REST handlers: tenants, tickets, journal, custom fields, users, teams, webhooks, reports, audit status
   auth.py       roles, pbkdf2 passwords, sha256 tokens, sessions, tenant context, first-start bootstrap
   tenants.py    tenant lookup, validation, per-tenant seed (teams, custom fields)
   audit.py      audit logger: local JSON log + optional Splunk HEC (see docs/logging.md)
   webhooks.py   background worker for outbound webhooks (generic + SOAR), retry 3x
   db.py         sqlite3 connection, schema + idempotent migrations (PRAGMA user_version)
   static/       single-page web UI (index.html, app.js, app.css)
+```
+
+Around the ticket system:
+
+```
+soar-app/          Splunk SOAR app "MyDemoTicket" 1.2.0: 10 actions incl. on poll (REST client, stdlib only)
+soar-playbooks/    mydemoticket_es_mirror (ticket -> ES), mydemoticket_ticket_from_es (ES notable -> ticket)
+mcp-server/        MCP server 1.0.0 (stdio, JSON-RPC 2.0) for Claude Code / Claude Desktop, journal source "mcp"
+splunk/            props/fields/indexes/inputs/authorize examples and two Simple XML dashboards
+deploy/            install.sh (systemd + Caddy), aws/ (deploy.sh, boot.sh, backup.sh, user-data.sh)
 ```
 
 | Component | Responsibility | State |
@@ -27,9 +37,27 @@ ticket-system/mydemoticket/
 | `AuditLogger` | One audit event per action, request id, never secrets | `<data-dir>/logs/audit.log` + HEC |
 | SQLite | Tenants, tickets, journal, users, tokens, sessions, teams, custom fields, webhooks | `<data-dir>/mydemoticket.sqlite3` |
 
-The data directory (`$MYDEMOTICKET_DATA_DIR` or `~/.mydemoticket`) holds the
-database and, after the first start, `initial-credentials.txt` (mode 0600).
+The data directory (`--data-dir`, `$MYDEMOTICKET_DATA_DIR` or `~/.mydemoticket`) holds
+the database (WAL mode), the migration backups `*.pre-v<N>.bak`, the audit log
+`logs/audit.log` and, after the first start, `initial-credentials.txt` (mode 0600).
 Nothing else is written outside it.
+
+## Journal
+
+Every ticket has one chronological journal (`journal` table). Entry types:
+
+| Type | Written by | Visible to the requester |
+|---|---|---|
+| `comment` | `POST /tickets/{number}/comments` (default type) | yes |
+| `work_note` | same, `"type": "work_note"`; not for requesters | no |
+| `summary` | same, `"type": "summary"` (AI or resolution summary); not for requesters | yes |
+| `audit` | the server, one entry per changed field (and `created`) | yes |
+
+Each entry has `actor` (user of the token or session), `source` (from
+`X-MyDemoTicket-Source`, default `api`/`web`) and, since schema v3, an optional
+`author`: the real person an integration writes for (e.g. the ES analyst). The UI
+shows `jdoe (via soar)`. The ticket detail page shows the journal in tabs: Work
+notes, Comments, Resolution report (newest `summary`), Audit trail, History.
 
 ## Data flow Ticket ↔ SOAR ↔ ES
 
@@ -46,10 +74,21 @@ sequenceDiagram
     Note over MDT: source = soar → SOAR-type webhooks skip delivery (no echo)
     UI->>MDT: PATCH state / assign / work note (session cookie + CSRF)
     MDT->>SOAR: webhook type soar: POST /rest/container (dedupe by number)<br/>POST /rest/artifact (cef: ticketState, changes, comment ...)
-    SOAR->>SOAR: run_automation → playbook syncs state/notes
-    SOAR->>ES: update finding status / add note
+    SOAR->>SOAR: run_automation → playbook mydemoticket_es_mirror
+    SOAR->>ES: Splunk app "update event" (finding status, owner) on ticket.created / state_changed
+    SOAR->>ES: ES app "update finding or investigation" (ES 8 investigation, resolve/close)
+    SOAR->>ES: ES app "add finding or investigation note" (comments, work notes, close note)
     SOAR->>MDT: PATCH /api/v1/tickets/{number} (source soar) e.g. resolve with close_notes
 ```
+
+ES mirror details (`soar-playbooks/mydemoticket_es_mirror.py`): the target is
+`cef.esInvestigationId` (ES 8 investigation GUID) if set, else `cef.esFindingId`.
+Status mapping new→1, in_progress→2, on_hold→3, resolved→4, closed/cancelled→5.
+Notes are written with the Enterprise Security app (not as `update event`
+comments, which ES 8 shows only as a "Finding Update" note) with the content
+`MyDemoTicket <number> – <type>/<author>: <text>`. On resolve/close/cancel a close
+note with `cef.closeNotes` is added. Artifacts with `cef.source = soar` are ignored.
+Without any ES id the playbook only adds a note to the SOAR container.
 
 ASCII overview:
 
@@ -73,7 +112,9 @@ ASCII overview:
   `external_refs.soar_container_id`.
 * **Cross references:** `external_refs` is a free key/value object that is merged
   on PATCH (`null` deletes a key). Conventions: `soar_container_id` (int),
-  `es_finding_id` (string).
+  `es_finding_id` (string), `es_investigation_id` (string, ES 8 investigation).
+  `GET /tickets?external_ref.<key>=<value>` finds tickets by reference (find before
+  create).
 * **Push (ticket → SOAR):** every change emits exactly one event:
   `ticket.created`, `ticket.state_changed` (if `state` changed, includes all other
   changes of that request), `ticket.updated` (all other field changes) or
@@ -150,6 +191,9 @@ tenants ──< users (tenant_id; NULL only for platform_admin) ──< api_toke
   all existing rows). Same rules: one transaction per step, and before each step a
   copy of the previous state is written to `<db>.pre-v<N>.bak` (a v2 database gets
   `mydemoticket.sqlite3.pre-v3.bak`; an existing backup is never overwritten).
+* **Schema versions** (`PRAGMA user_version`, `MIGRATIONS` in `db.py`): 1 base
+  schema, 2 multi-tenancy, 3 `journal.author`. Version 1.0.0 of the ticket system
+  uses schema 3. See [operations.md](operations.md#updates-and-schema-migrations).
 * **external_ref filter:** `GET /tickets?external_ref.<key>=<value>` uses SQLite
   `json_type`/`json_extract` on `tickets.external_refs` inside the normal SQL query,
   so paging and `total` stay exact. Without JSON1 (very old SQLite) `db.py`
@@ -185,7 +229,29 @@ Authentication:
   seed users' passwords and the `soar` user's token are generated randomly and
   written to `<data-dir>/initial-credentials.txt` (0600), never to stdout.
 
+## MCP server
+
+`mcp-server/` is a separate process started by Claude Code or Claude Desktop
+(stdio, JSON-RPC 2.0, standard library only). It calls the REST API with its own
+Bearer token (`MYDEMOTICKET_TOKEN` or, via `run.sh`, the macOS keychain item
+`mydemoticket`/`mcp-api-token`) and sends `X-MyDemoTicket-Source: mcp`, so its
+changes appear in the journal with source `mcp` and are delivered to SOAR webhooks
+like UI changes. It can do exactly what the token's user may do; no tool deletes
+anything. Details: [mcp-server/README.md](../mcp-server/README.md).
+
 ## Deployment target
+
+Three supported ways, all with the same package and data layout
+([installation.md](installation.md)):
+
+* **Local:** `python3 -m mydemoticket` on 127.0.0.1.
+* **Linux server:** `deploy/install.sh` (systemd + Caddy with Let's Encrypt).
+* **AWS EC2:** `deploy/aws/deploy.sh`; Caddy runs as Docker container, the host name
+  goes either directly to the instance (Caddy TLS) or through an existing ALB (TLS
+  with ACM on the ALB, plain HTTP to instance port 8081 from the ALB security group
+  only). `<ip>.sslip.io` always works via Caddy.
+
+Example (demo deployment, direct variant):
 
 ```
 Internet ──443/TLS──> Caddy (ticket.soc-games.com, automatic Let's Encrypt)
@@ -197,10 +263,11 @@ Internet ──443/TLS──> Caddy (ticket.soc-games.com, automatic Let's Encry
                /var/lib/mydemoticket (data dir, SQLite, 0700)
 ```
 
-* Small AWS EC2 instance (t3.micro / t4g.small is plenty), Amazon Linux 2023 or
-  Ubuntu with system Python 3.9+. Security group: 80/443 from the internet (or
-  demo IP ranges), 22 only from admin IPs. Port 8080 is never exposed.
-* DNS: `A` record `ticket.soc-games.com` → Elastic IP of the instance.
+* `deploy/aws/deploy.sh` uses a `t4g.nano` (Amazon Linux 2023 arm64, Python 3.9),
+  security group 80/443 only, no SSH (SSM Session Manager). Port 8080 is never exposed.
+* DNS: `A` record → public IP of the instance (direct; changes on stop/start, no
+  Elastic IP), or `CNAME` → ALB DNS name (ALB variant).
 * `deploy/install.sh` renders the systemd unit and Caddyfile (`--dry-run`,
-  `--uninstall`); see `deploy/README.md`.
-* Backup: copy the data directory (stop the service or use `sqlite3 .backup`).
+  `--uninstall`, `--alb-port`); see [installation.md](installation.md).
+* Backup: copy the data directory with the service stopped (`deploy/aws/backup.sh`
+  on AWS) or use SQLite's online backup; see [operations.md](operations.md#backup-and-restore).

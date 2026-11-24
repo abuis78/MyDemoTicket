@@ -185,7 +185,7 @@ A new login starts in `soc-games` again.
 
 ```bash
 curl -s $MDT/health
-# {"status": "ok", "version": "0.1.0"}
+# {"status": "ok", "version": "1.0.0"}
 ```
 
 ### `GET /me`

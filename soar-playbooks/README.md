@@ -68,7 +68,7 @@ Label: `notable` (adjust to the label your Splunk app ingests ES notables with).
 | `mydemoticket_es_mirror.py` | `MIRROR_OWNER` | `True` |
 | `mydemoticket_es_mirror.py` | `INVESTIGATION_CLOSE_DISPOSITION` | `""` (not sent) |
 | `mydemoticket_ticket_from_es.py` | `MYDEMOTICKET_ASSET` | `mydemoticket` |
-| `mydemoticket_ticket_from_es.py` | `ASSIGNMENT_GROUP`, `CATEGORY` | `SOC`, `security_incident` |
+| `mydemoticket_ticket_from_es.py` | `ASSIGNMENT_GROUP`, `CATEGORY` | `SOC L1`, `security_incident` |
 
 ## Known limits
 - Parameter names are checked against the Cloud SOAR app schemas (`GET /rest/app_action?_filter_app=163`
