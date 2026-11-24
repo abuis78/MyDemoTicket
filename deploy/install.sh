@@ -8,7 +8,7 @@
 #   sudo deploy/install.sh --uninstall --purge-data
 #
 # Options (defaults in brackets):
-#   --domain NAME      public host name                [ticket.soc-games.com]
+#   --domain NAME[,NAME...] public host name(s)      [ticket.soc-games.com]
 #   --port N           local port of the app            [8080]
 #   --user NAME        system user                      [mydemoticket]
 #   --install-dir DIR  code location                    [/opt/mydemoticket]
@@ -61,7 +61,10 @@ while [ $# -gt 0 ]; do
 done
 
 case "$PORT" in ''|*[!0-9]*) echo "--port must be a number" >&2; exit 2 ;; esac
-case "$DOMAIN" in ''|*[!A-Za-z0-9.-]*) echo "--domain contains invalid characters" >&2; exit 2 ;; esac
+case "$DOMAIN" in ''|*[!A-Za-z0-9.,-]*) echo "--domain contains invalid characters" >&2; exit 2 ;; esac
+# several names: --domain a.example.com,b.example.com (Caddy site address list)
+DOMAIN_LIST="${DOMAIN//,/, }"
+PRIMARY_DOMAIN="${DOMAIN%%,*}"
 case "$SVC_USER" in ''|*[!a-z0-9_-]*) echo "--user contains invalid characters" >&2; exit 2 ;; esac
 
 if [ "$DRY_RUN" -eq 1 ] && [ -z "$ROOT" ]; then
@@ -91,7 +94,7 @@ render() {  # render TEMPLATE DEST MODE
   local tmp
   tmp="$(mktemp)"
   sed -e "s|@USER@|$SVC_USER|g" -e "s|@PYTHON@|$PYTHON_BIN|g" -e "s|@INSTALL_DIR@|$INSTALL_DIR|g" \
-      -e "s|@DATA_DIR@|$DATA_DIR|g" -e "s|@PORT@|$PORT|g" -e "s|@DOMAIN@|$DOMAIN|g" \
+      -e "s|@DATA_DIR@|$DATA_DIR|g" -e "s|@PORT@|$PORT|g" -e "s|@DOMAIN@|$DOMAIN_LIST|g" \
       -e "s|@ENV_FILE@|$ENV_FILE|g" "$1" > "$tmp"
   mkdir -p "$(dirname "$(p "$2")")"
   install -m "$3" "$tmp" "$(p "$2")"
@@ -155,7 +158,7 @@ do_install() {
   run systemctl enable mydemoticket.service
   run systemctl restart mydemoticket.service
   run systemctl reload-or-restart caddy
-  say "done. Check: curl -s https://$DOMAIN/api/v1/health"
+  say "done. Check: curl -s https://$PRIMARY_DOMAIN/api/v1/health"
   say "initial credentials (first start only): $DATA_DIR/initial-credentials.txt (root/$SVC_USER only)"
 }
 
