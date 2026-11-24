@@ -41,11 +41,11 @@ All requests use a 30 s timeout. HTTP errors are returned as failed action with
 | Action | Parameters | Main output |
 |---|---|---|
 | test connectivity | – | `summary.version`, `summary.role` |
-| create ticket | `short_description`*, `description`, `priority` (1–4), `assignment_group`, `assigned_to`, `category`, `custom_fields` (JSON object string), `es_finding_id` | ticket; `external_refs.soar_container_id` is set automatically from the current container |
+| create ticket | `short_description`*, `description`, `priority` (1–4), `assignment_group`, `assigned_to`, `category`, `custom_fields` (JSON object string), `es_finding_id`, `es_investigation_id` | ticket; `external_refs.soar_container_id` is set automatically from the current container |
 | get ticket | `number`* | ticket |
-| update ticket | `number`*, all ticket fields optional, `custom_fields` (JSON, merged), `es_finding_id` (merged into `external_refs`) | ticket |
+| update ticket | `number`*, all ticket fields optional, `custom_fields` (JSON, merged), `es_finding_id`, `es_investigation_id` (merged into `external_refs`) | ticket |
 | set state | `number`*, `state`* (`new`, `in_progress`, `on_hold`, `resolved`, `closed`, `cancelled`), `close_notes` | ticket |
-| add comment | `number`*, `body`*, `type` (`comment` \| `work_note`, default `comment`), `author` (1–64 chars, e.g. the ES analyst) | journal entry (`actor` = token user, `author` or null) |
+| add comment | `number`*, `body`*, `type` (`comment` \| `work_note` \| `summary`, default `comment`), `author` (1–64 chars, e.g. the ES analyst) | journal entry (`actor` = token user, `author` or null) |
 | list tickets | `state`, `assignment_group`, `assigned_to`, `updated_since` (ISO-8601 UTC `Z`), `q`, `external_ref_key` + `external_ref_value` (both or neither), `limit` (default 100), `offset` | tickets, `summary.total`, `summary.returned` |
 | get journal | `number`* | journal entries (incl. `author`), `summary.entries` |
 | list custom fields | – | definitions (`name`, `label`, `type`, `choices`, `required`) |
@@ -53,7 +53,7 @@ All requests use a 30 s timeout. HTTP errors are returned as failed action with
 
 Ticket data paths (`action_result.data.*.`): `number`, `id`, `short_description`, `description`,
 `state`, `priority`, `assignment_group`, `assigned_to`, `caller`, `category`,
-`external_refs.soar_container_id`, `external_refs.es_finding_id`, `created_at`, `updated_at`,
+`external_refs.soar_container_id`, `external_refs.es_finding_id`, `external_refs.es_investigation_id`, `created_at`, `updated_at`,
 `resolved_at`, `close_notes`. The full list is in `mydemoticket.json`.
 
 **Find before create (idempotent playbooks):** `list tickets` with `external_ref_key = es_finding_id`
@@ -64,6 +64,15 @@ ticket only when `summary.total` is 0.
 **Comment author:** `add comment` with `author` keeps the API user as `actor` (e.g. `soar`) and
 stores the real person separately; the ticket UI shows `jdoe (via soar)`. Pushed SOAR artifacts of
 `ticket.commented` carry it as CEF `commentAuthor`.
+
+**Summary:** `add comment` with `type = summary` writes an AI or resolution summary. It is visible
+like a comment (also to the requester) and shown in the ticket UI tab "Resolution report" (newest
+summary first, older ones collapsed). Pushed artifacts carry `commentType = summary`.
+Needs ticket system with journal type `summary`.
+
+**ES investigation:** `es_investigation_id` is stored in `external_refs.es_investigation_id`
+(update ticket merges it, other refs stay). Pushed SOAR artifacts carry it as CEF
+`esInvestigationId`.
 
 ## Sync concept
 Two channels keep SOAR and the ticket system in sync:
@@ -79,7 +88,7 @@ Two channels keep SOAR and the ticket system in sync:
    `source_data_identifier` = `<number>:<updated_at>`, `run_automation: false`).
    CEF fields: `ticketNumber`, `ticketState`, `ticketPriority`, `shortDescription`,
    `assignmentGroup`, `assignedTo`, `caller`, `category`, `updatedAt`, `customFields` (JSON string),
-   `esFindingId`.
+   `esFindingId`, `esInvestigationId`.
    - Poll Now ingests at most `container_count` tickets, ignores and does not change `last_poll`.
    - Scheduled poll: the first run ingests all tickets; later runs skip a ticket when the newest
      journal entry has `source` equal to `source_tag` (the change came from SOAR). If the journal
@@ -120,6 +129,9 @@ phenv python3 mydemoticket_connector.py /tmp/test_get_ticket.json
 | `Connection error` / `Timeout after 30 s` | Network, DNS, proxy or TLS – check `base_url`, `verify_server_cert` |
 
 ## 10. Changelog
+- 1.2.0 (2026-11-24): `add comment` `type` also `summary`; `create ticket` / `update ticket` optional
+  `es_investigation_id` (external_refs); data path `external_refs.es_investigation_id`; poll snapshot
+  CEF `esInvestigationId`. Not yet tested on a real SOAR instance.
 - 1.1.0 (2026-11-24): `add comment` optional `author`; `list tickets` optional `external_ref_key` /
   `external_ref_value` (needs ticket system with `external_ref.<key>` filter); data paths `author`,
   `actor`. Not yet tested on a real SOAR instance.

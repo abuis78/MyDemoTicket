@@ -196,6 +196,10 @@ class MyDemoTicketConnector(BaseConnector):
         action_result.update_summary({"version": health.get("version"), "role": role})
         return action_result.set_status(phantom.APP_SUCCESS, "Test Connectivity Passed")
 
+    @staticmethod
+    def _external_ref_params(param):
+        return {key: param[key] for key in EXTERNAL_REF_PARAMS if param.get(key)}
+
     def _handle_create_ticket(self, param):
         action_result = self.add_action_result(ActionResult(dict(param)))
         body = {"short_description": param.get("short_description")}
@@ -216,8 +220,7 @@ class MyDemoTicketConnector(BaseConnector):
         container_id = self.get_container_id()
         if container_id:
             refs["soar_container_id"] = container_id
-        if param.get("es_finding_id"):
-            refs["es_finding_id"] = param["es_finding_id"]
+        refs.update(self._external_ref_params(param))
         if refs:
             body["external_refs"] = refs
 
@@ -266,8 +269,9 @@ class MyDemoTicketConnector(BaseConnector):
             return ret
         if custom:
             body["custom_fields"] = custom
-        if param.get("es_finding_id"):
-            body["external_refs"] = {"es_finding_id": param["es_finding_id"]}
+        refs = self._external_ref_params(param)
+        if refs:
+            body["external_refs"] = refs
         if not body:
             return action_result.set_status(phantom.APP_ERROR, "No fields to update were given")
         return self._patch_ticket(action_result, param["number"], body, "Updated ticket {}")
@@ -287,7 +291,8 @@ class MyDemoTicketConnector(BaseConnector):
         action_result = self.add_action_result(ActionResult(dict(param)))
         ctype = param.get("type") or "comment"
         if ctype not in VALID_COMMENT_TYPES:
-            return action_result.set_status(phantom.APP_ERROR, "Parameter type must be comment or work_note")
+            return action_result.set_status(
+                phantom.APP_ERROR, "Parameter type must be one of {}".format(", ".join(VALID_COMMENT_TYPES)))
         body = {"body": param.get("body"), "type": ctype}
         author = param.get("author")
         if author not in (None, ""):
@@ -391,6 +396,7 @@ class MyDemoTicketConnector(BaseConnector):
             "updatedAt": ticket.get("updated_at"),
             "customFields": json.dumps(ticket.get("custom_fields") or {}, sort_keys=True),
             "esFindingId": refs.get("es_finding_id"),
+            "esInvestigationId": refs.get("es_investigation_id"),
         }
 
     def _ingest_ticket(self, ticket):
