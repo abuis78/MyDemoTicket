@@ -1,5 +1,9 @@
 # Deploying MyDemoTicket to AWS EC2 (ticket.soc-games.com)
 
+> Complete, environment-neutral guides: [docs/installation.md](../docs/installation.md) (local, Linux
+> server, AWS, SOAR/ES/Splunk/MCP) and [docs/operations.md](../docs/operations.md) (backup, updates,
+> moving, troubleshooting). This file keeps the notes for the demo deployment.
+
 Target: one small EC2 instance, Caddy terminates TLS (automatic Let's Encrypt)
 and proxies to the app on `127.0.0.1:8080`, run by systemd as user
 `mydemoticket`. Data lives in `/var/lib/mydemoticket`.

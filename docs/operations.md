@@ -195,7 +195,7 @@ index=mydemoticket sourcetype=mydemoticket:audit action=webhook.delivery outcome
 | `409` on a state change | Transition not allowed (e.g. `new → closed`); see the state machine in [api.md](api.md#state-transitions) |
 | `422` when resolving | `close_notes` missing |
 | SOAR test connectivity: `API token role '...' is not allowed` | The asset uses a `platform_admin` or `requester` token; use an `integration`, `agent` or `admin` token of the tenant |
-| SOAR *create ticket* from ES fails with `HTTP 422` | `ASSIGNMENT_GROUP` in `mydemoticket_ticket_from_es.py` (default `SOC`) is not a team of the tenant |
+| SOAR *create ticket* from ES fails with `HTTP 422` | `ASSIGNMENT_GROUP` in `mydemoticket_ticket_from_es.py` (default `SOC L1`) is not a team of the tenant |
 | Playbook import stays in draft mode ("Python linting and validation could not be run") | `coa.python_version`, `coa.schema` or `coa.version` missing in the playbook `.json`; import the files from this repo unchanged |
 | Playbook does not run | Not active, or the container label is not `mydemoticket`, or the artifact label is not `mydemoticket_event` |
 | Webhook delivery `skipped` with "change originated from SOAR (loop prevention)" | Expected: the change came with `X-MyDemoTicket-Source: soar` (e.g. from the SOAR app) |

@@ -373,6 +373,10 @@ python3 build.py              # Built .../soar-app/dist/mydemoticket.tgz
     --data-binary @"${TMPDIR:-/tmp}/mdt-app.json" "$SOAR/rest/app"
   ```
 
+  Verified live on 2026-11-24 against Splunk SOAR 8.7 and 8.8 (Splunk Cloud): the answer is
+  `{"success": true, "message": "App successfully imported.", "id": <app id>}`. Re-importing a
+  newer version upgrades the app in place; existing assets keep their configuration.
+
 The app has no pip dependencies (`python_version` 3.13, app version 1.2.0).
 
 ### 9.2 Asset
@@ -396,7 +400,12 @@ Optional: enable polling as a fallback for missed webhooks (see the app README).
 
 The webhook and *on poll* create containers with label `mydemoticket`. Create it
 in SOAR (*Administration → Event Settings → Label Settings*) if it does not exist;
-SOAR rejects containers with unknown labels.
+SOAR rejects containers with unknown labels. Via REST (verified live on SOAR 8.7 and 8.8):
+
+```bash
+curl -s -X POST -H "ph-auth-token: $SOAR_TOKEN" -H "Content-Type: application/json" \
+  -d '{"add_label": true, "label_name": "mydemoticket"}' "$SOAR/rest/system_settings/events"
+```
 
 ### 9.4 Webhook of type `soar` (one per tenant)
 
@@ -438,7 +447,7 @@ only syntax-checked so far). Logic and limits: [soar-playbooks/README.md](../soa
    | `mydemoticket_es_mirror.py` | `MIRROR_OWNER` | `True` (set `False` if ticket users do not exist in ES) |
    | `mydemoticket_es_mirror.py` | `INVESTIGATION_CLOSE_DISPOSITION` | `""` (not sent), e.g. `"disposition:1"` |
    | `mydemoticket_ticket_from_es.py` | `MYDEMOTICKET_ASSET` | `mydemoticket` |
-   | `mydemoticket_ticket_from_es.py` | `ASSIGNMENT_GROUP`, `CATEGORY` | `SOC`, `security_incident` |
+   | `mydemoticket_ticket_from_es.py` | `ASSIGNMENT_GROUP`, `CATEGORY` | `SOC L1`, `security_incident` |
 
    `builtin_mc_connector` is the ES app asset name of the demo Splunk Cloud SOAR;
    check yours under *Apps → Enterprise Security*. `ASSIGNMENT_GROUP` must be an
@@ -467,6 +476,9 @@ only syntax-checked so far). Logic and limits: [soar-playbooks/README.md](../soa
    curl -s -X POST -H "ph-auth-token: $SOAR_TOKEN" -H "Content-Type: application/json" \
      --data-binary @"${TMPDIR:-/tmp}/mdt-pb.json" "$SOAR/rest/import_playbook"
    ```
+
+   Verified live on 2026-11-24 (SOAR 8.8): `{"success": true, "message": "Playbook \"mydemoticket_es_mirror\" imported.", "id": <id>}`.
+   Then activate it (*Playbooks* → toggle *Active*, or `POST /rest/playbook/<id>` with `{"active": true}`).
 
 4. **Activate** the playbook (label `mydemoticket`, trigger *artifact created*,
    type automation). Do not edit it in the Visual Playbook Editor: the `.json` holds
