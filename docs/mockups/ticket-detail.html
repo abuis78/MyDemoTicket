@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mockup - Ticket detail - MyDemoTicket</title>
+  <!-- Static mockup: uses the real UI stylesheet; all data is placeholder data. -->
+  <link rel="stylesheet" href="../../ticket-system/mydemoticket/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="ticket-list.html">MyDemoTicket</a>
+    <form class="global-search"><input type="search" placeholder="Search tickets" aria-label="Search tickets"></form>
+    <div class="userbox"><span>Analyst One (agent)</span><button type="button" class="link">Log out</button></div>
+  </header>
+  <div class="layout">
+    <nav class="sidebar">
+      <div class="nav-section">Tickets</div>
+      <a href="ticket-list.html">All open</a>
+      <a href="ticket-list.html">Assigned to me</a>
+      <a href="ticket-list.html">Unassigned</a>
+      <a href="ticket-list.html">All tickets</a>
+      <a href="ticket-detail.html">Create new</a>
+    </nav>
+    <main class="content">
+      <div class="panel">
+        <div class="panel-head">
+          <h1>TKT0001003 </h1><span class="badge state-in_progress">In Progress</span>
+          <span class="spacer"></span>
+          <div class="actions">
+            <button>Put on hold</button>
+            <button class="primary">Resolve</button>
+            <button class="danger">Cancel ticket</button>
+            <button class="primary">Save</button>
+          </div>
+        </div>
+        <div class="panel-body form-grid">
+          <div><label>Number</label><input value="TKT0001003" disabled></div>
+          <div><label>Caller</label><input value="requester1" disabled></div>
+          <div class="wide"><label class="req">Short description</label><input value="Phishing mail reported by user"></div>
+          <div class="wide"><label>Description</label><textarea>User forwarded a mail with a link to a fake login page.</textarea></div>
+          <div><label>Priority</label><select><option>1 - Critical</option><option selected>2 - High</option><option>3 - Moderate</option><option>4 - Low</option></select></div>
+          <div><label>Category</label><input value="security"></div>
+          <div><label>Assignment group</label><select><option>-- none --</option><option selected>SOC L1</option><option>SOC L2</option><option>IT Ops</option></select></div>
+          <div><label>Assigned to</label><select><option>-- none --</option><option selected>Analyst One</option><option>Analyst Two</option></select></div>
+          <div><label>MITRE ATT&amp;CK Technique</label><input value="T1566.002"></div>
+          <div><label>Affected Host</label><input value="demo-host-07"></div>
+          <div><label>Risk Score</label><input type="number" value="65"></div>
+          <div><label>Incident Type</label><select><option>-</option><option>malware</option><option selected>phishing</option><option>data_exfiltration</option><option>other</option></select></div>
+          <div class="wide"><label>Close notes</label><textarea></textarea></div>
+          <div class="wide muted">Created 24.11.2026, 15:02 - Updated 24.11.2026, 15:32</div>
+          <div class="wide"><label>External references</label><div class="mono">es_finding_id: finding-placeholder-0003  |  soar_container_id: 12</div></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Activity</h2></div>
+        <form class="panel-body">
+          <div class="tabs"><button type="button" class="active">Work note</button><button type="button">Comment</button></div>
+          <textarea placeholder="Add a work note (internal)"></textarea>
+          <div><button class="primary" type="button">Post</button></div>
+        </form>
+        <div class="panel-body">
+          <ul class="journal">
+            <li class="work_note"><div class="meta">Work note - soar - 24.11.2026, 15:33 - via soar</div><div class="body">URL reputation: malicious (placeholder result). Sender domain blocked.</div></li>
+            <li class="audit"><div class="meta">Field change - analyst1 - 24.11.2026, 15:32 - via web</div><div class="body">state: new → in_progress</div></li>
+            <li class="comment"><div class="meta">Comment - analyst1 - 24.11.2026, 15:31 - via web</div><div class="body">Thanks for reporting, we are looking into it.</div></li>
+            <li class="audit"><div class="meta">Field change - requester1 - 24.11.2026, 15:02 - via web</div><div class="body">Ticket created</div></li>
+          </ul>
+        </div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>
