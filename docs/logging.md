@@ -21,8 +21,8 @@ fields below. In the HEC payload `tenant` is sent **only** as indexed field
 | `role` | string/null | Role of the actor within the tenant |
 | `outcome` | string | `success`, `failure`, `denied`, `skipped` or `error` |
 | `object_type` | string/null | `ticket`, `user`, `token`, `team`, `custom_field`, `webhook`, `tenant`, ... |
-| `object_id` | string/null | Id or number of the object, e.g. `INC0001001` |
-| `source` | string/null | Channel: `ui`, `api`, `webhook`, `system` |
+| `object_id` | string/null | Id or number of the object, e.g. `TKT0001001` |
+| `source` | string/null | Channel: value of the `X-MyDemoTicket-Source` header (e.g. `soar`, `mcp`), else `web` (session) or `api` (token); `webhook` for delivery events |
 | `ip` | string/null | Client IP |
 | `request_id` | string/null | Request id for correlation with access logs |
 | `details` | object | Action-specific data (redacted, see below) |
@@ -34,8 +34,8 @@ Example:
 ```json
 {"ts": "2026-11-24T10:15:30.123Z", "tenant": "soc-games", "action": "ticket.state_change",
  "actor": "alice", "role": "agent", "outcome": "success", "object_type": "ticket",
- "object_id": "INC0001001", "source": "api", "ip": "10.0.0.5", "request_id": "6f1c...",
- "details": {"from": "in_progress", "to": "resolved"}, "app": "mydemoticket", "version": "0.1.0"}
+ "object_id": "TKT0001001", "source": "api", "ip": "10.0.0.5", "request_id": "6f1c...",
+ "details": {"from": "in_progress", "to": "resolved"}, "app": "mydemoticket", "version": "1.0.0"}
 ```
 
 ### Redaction
@@ -78,7 +78,7 @@ from mydemoticket.audit import AuditLogger
 audit = AuditLogger.from_env(data_dir)   # all tenants -> index from MYDEMOTICKET_HEC_INDEX
 audit.start()
 audit.log("ticket.create", tenant="soc-games", actor="alice", role="agent",
-          object_type="ticket", object_id="INC0001001", source="api",
+          object_type="ticket", object_id="TKT0001001", source="api",
           ip=client_ip, request_id=req_id, details={"priority": 2})
 ...
 audit.stop()   # drains the queue for up to 5 s
@@ -126,16 +126,12 @@ jq -c 'select(.tenant=="soc-games" and .outcome!="success")' /var/lib/mydemotick
    | `MYDEMOTICKET_HEC_VERIFY_TLS` | `1` verify TLS certificate, `0` skip (lab only) | `1` |
    | `MYDEMOTICKET_HEC_INDEX` | Target index, `mydemoticket` | unset = token default index |
 
-   Never put the token into the repo. On AWS store it in SSM Parameter Store as a
-   `SecureString` and render it into the service's environment file at deploy time, e.g.:
-
-   ```bash
-   aws ssm put-parameter --name /mydemoticket/hec-token --type SecureString --value "<token>"
-   aws ssm get-parameter --name /mydemoticket/hec-token --with-decryption --query Parameter.Value --output text
-   ```
-
-   The environment file (for example `/etc/mydemoticket/env`, mode `0600`) then contains
-   `MYDEMOTICKET_HEC_TOKEN=...`.
+   Never put the token into the repo. On AWS `deploy/aws/deploy.sh` reads it from the macOS
+   keychain (service `mydemoticket`, account `splunk-hec-token`) and stores it in SSM as
+   `SecureString` `/mydemoticket/HEC_TOKEN` (with `/mydemoticket/HEC_URL` and
+   `/mydemoticket/HEC_INDEX`); `deploy/aws/boot.sh` renders them into `/etc/mydemoticket/env`
+   (mode `0600`) on every boot, see [installation.md](installation.md#11-splunk-audit-log-via-hec-dashboards-roles).
+   On your own server add `MYDEMOTICKET_HEC_TOKEN=...` etc. to that env file yourself.
 5. Test from the ticket host:
 
    ```bash
@@ -224,7 +220,7 @@ index=mydemoticket sourcetype=mydemoticket:audit action=webhook.delivery
 History of one ticket:
 
 ```
-index=mydemoticket sourcetype=mydemoticket:audit object_type=ticket object_id=INC0001001
+index=mydemoticket sourcetype=mydemoticket:audit object_type=ticket object_id=TKT0001001
 | table _time action actor outcome details.from details.to
 ```
 
