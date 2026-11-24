@@ -28,8 +28,61 @@ port 8081 (plain HTTP, only from the ALB security group). DNS at one.com:
 `CNAME ticket → alb-aws-962976536.eu-central-1.elb.amazonaws.com` (same as soar/splunk/demo).
 Test before DNS exists:
 `curl --connect-to ticket.soc-games.com:443:alb-aws-962976536.eu-central-1.elb.amazonaws.com:443 https://ticket.soc-games.com/api/v1/health`.
-New code: run `deploy.sh` again (uploads the bundle), then reboot the instance.
-`deploy/aws/deploy.sh --uninstall` removes everything (data on the instance is lost).
+New code: run `deploy.sh` again (uploads the bundle), then reboot the instance (order: see
+[Backup before an update](#backup-before-an-update)).
+`deploy/aws/deploy.sh --uninstall` removes everything (data on the instance is lost), including the HEC parameters.
+
+## Splunk HEC
+
+The audit log is always written locally to `/var/lib/mydemoticket/logs/audit.log` (0600, inside the data dir,
+which is the only writable path of the systemd unit). In addition it is shipped to Splunk HEC when configured
+(details: [`docs/logging.md`](../docs/logging.md)).
+
+1. Store the HEC token once in the macOS keychain (prompts for the value, nothing in the shell history):
+   ```bash
+   security add-generic-password -s mydemoticket -a splunk-hec-token -w
+   ```
+2. Run `deploy/aws/deploy.sh`. Env: `HEC_URL` (default `https://splunk.soc-games.com:8088`, `none` = HEC off),
+   `HEC_INDEX` (default `mydemoticket`). It writes these SSM parameters:
+
+   | Parameter | Type | Content |
+   |---|---|---|
+   | `/mydemoticket/HEC_URL` | String | HEC base URL, or `none` |
+   | `/mydemoticket/HEC_INDEX` | String | target index, `mydemoticket` |
+   | `/mydemoticket/HEC_TOKEN` | SecureString | token from the keychain (via temp JSON file, never on the command line or in output) |
+
+   If the keychain item is missing, `deploy.sh` prints a warning, sets `HEC_URL=none`, deletes `HEC_TOKEN` and
+   continues. `--dry-run` lists the planned parameters without the token value.
+3. Reboot the instance. `boot.sh` reads the parameters on **every** boot and rewrites the root-only env file
+   `/etc/mydemoticket/env` (0600) with `MYDEMOTICKET_HEC_URL`, `MYDEMOTICKET_HEC_TOKEN`, `MYDEMOTICKET_HEC_INDEX`
+   and `MYDEMOTICKET_HEC_VERIFY_TLS=1`. Missing parameters mean HEC off, the boot does not fail. `install.sh`
+   never overwrites an existing env file; the service reads it via `EnvironmentFile`.
+4. Check in Splunk: `index=mydemoticket sourcetype=mydemoticket:audit | stats count by tenant`.
+
+All tenants share the one index `mydemoticket`; they are separated by the indexed field `tenant` and one Splunk
+role per tenant with `srchFilter = tenant::<slug>` (see [`docs/logging.md`](../docs/logging.md#tenant-separation-in-splunk)).
+
+## Backup before an update
+
+`deploy/aws/backup.sh` copies the data directory on the instance via SSM Run Command (no SSH, no `sqlite3`):
+`systemctl stop mydemoticket; cp -a /var/lib/mydemoticket /var/lib/mydemoticket.bak-<UTC timestamp>;
+systemctl start mydemoticket` (the service is started again even if the copy fails). It finds the running
+instance by tag `Name=$NAME` and waits for the command status. `--dry-run` only prints the command, no AWS call.
+
+Rollout order:
+
+```bash
+export AWS_PROFILE=janus-env2
+deploy/aws/backup.sh                       # 1. backup on the instance, wait for "OK: backup ..."
+EXTRA_TAGS="splunkit_environment_type=non-prd,splunkit_data_classification=private" deploy/aws/deploy.sh   # 2. bundle + parameters
+aws ec2 reboot-instances --instance-ids <instance id printed by deploy.sh>                               # 3. reboot: boot.sh installs
+curl -fsS https://ticket.soc-games.com/api/v1/health                                                     # 4. smoke test
+```
+
+Restore on the instance (`aws ssm start-session --target <id>`):
+`sudo systemctl stop mydemoticket && sudo mv /var/lib/mydemoticket /var/lib/mydemoticket.broken &&
+sudo cp -a /var/lib/mydemoticket.bak-<ts> /var/lib/mydemoticket && sudo systemctl start mydemoticket`.
+Backups stay on the instance volume (8 GB); delete old `.bak-*` directories by hand.
 
 ## Files
 
@@ -38,6 +91,10 @@ New code: run `deploy.sh` again (uploads the bundle), then reboot the instance.
 | `install.sh` | Copies the code, renders the systemd unit and Caddy site, enables the service. `--dry-run`, `--uninstall`, `--purge-data` |
 | `mydemoticket.service.template` | Hardened systemd unit (`ProtectSystem=strict`, only the data dir writable) |
 | `Caddyfile.template` | Caddy site for `@DOMAIN@` → `127.0.0.1:@PORT@` |
+| `aws/deploy.sh` | Creates / updates / removes the AWS resources and SSM parameters (`--dry-run`, `--uninstall`) |
+| `aws/boot.sh` | Runs on every boot of the instance: SSM parameters → `/etc/mydemoticket/env`, then `install.sh` |
+| `aws/backup.sh` | Copies the data dir on the instance via SSM before an update (`--dry-run`) |
+| `tests/test_deploy_scripts.sh` | Offline test of the scripts with stubbed `aws`/`curl`/`security` (no AWS, no network) |
 
 Try it locally without changing anything:
 
