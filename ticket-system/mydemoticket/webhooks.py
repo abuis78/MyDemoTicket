@@ -272,6 +272,7 @@ class WebhookDispatcher:
                 "commentType": comment.get("type") or "",
                 "customFields": json.dumps(ticket.get("custom_fields") or {}, sort_keys=True),
                 "esFindingId": str(refs.get("es_finding_id") or ""),
+                "esInvestigationId": str(refs.get("es_investigation_id") or ""),
                 "source": payload.get("source") or "",
                 "tenant": payload.get("tenant") or "",
             },

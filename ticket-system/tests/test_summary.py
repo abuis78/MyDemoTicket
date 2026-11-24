@@ -103,5 +103,21 @@ class SummaryTest(ServerTestCase):
             soar_rx.close()
 
 
+class EsInvestigationIdCefTest(ServerTestCase):
+    def test_cef_carries_es_investigation_id(self):
+        soar_rx = Receiver(lambda path, body: (200, {"id": 44}))
+        try:
+            self.admin.post("/webhooks", {"type": "soar", "url": soar_rx.url, "secret": "s",
+                                          "events": ["ticket.created", "ticket.updated"]})
+            t = self.create_ticket()
+            self.admin.patch("/tickets/" + t["number"], {"external_refs": {"es_investigation_id": "inv-0815"}})
+            self.wait_webhooks()
+            artifacts = [json.loads(r["body"]) for r in soar_rx.requests if r["path"].endswith("/rest/artifact")]
+            self.assertEqual([(a["name"], a["cef"]["esInvestigationId"]) for a in artifacts],
+                             [("ticket.created", ""), ("ticket.updated", "inv-0815")])
+        finally:
+            soar_rx.close()
+
+
 if __name__ == "__main__":
     unittest.main()
