@@ -568,54 +568,147 @@
     render(h("div", { class: "panel" }, header, formBody), drawJournal(t, journal, editable));
   }
 
-  function drawJournal(t, journal, editable) {
-    var me = session.me;
-    var isRequester = me.role === "requester";
-    var canComment = isRequester ? t.caller === me.username : editable;
-    var kind = isRequester ? "comment" : "work_note";
-    var text = h("textarea", { id: "j-body", placeholder: "Add a work note (internal)" });
-    var tabs = h("div", { class: "tabs" });
-    function setKind(k) {
-      kind = k;
-      text.placeholder = k === "work_note" ? "Add a work note (internal)" : "Add a comment (visible to caller)";
-      Array.prototype.forEach.call(tabs.children, function (b) {
-        b.classList.toggle("active", b.getAttribute("data-kind") === k);
-      });
-    }
-    if (!isRequester) {
-      tabs.appendChild(h("button", { type: "button", "data-kind": "work_note", onclick: function () { setKind("work_note"); } }, "Work note"));
-    }
-    tabs.appendChild(h("button", { type: "button", "data-kind": "comment", onclick: function () { setKind("comment"); } }, "Comment"));
-    setKind(kind);
+  // Journal tabs of the ticket detail page (WAI-ARIA tab pattern). The selected tab lives in the
+  // hash, e.g. #/tickets/TKT0001001?tab=worknotes, and is updated with replaceState (no reload).
+  var JOURNAL_LABEL = { work_note: "Work note", comment: "Comment", summary: "Summary", audit: "Field change" };
 
-    var form = canComment ? h("form", {
-      class: "panel-body",
+  function journalWho(e) {
+    return e.author ? e.author + " (via " + e.actor + ")" : e.actor;
+  }
+
+  function journalItem(e) {
+    var meta = h("div", { class: "meta" }, (JOURNAL_LABEL[e.type] || e.type) + " - " + journalWho(e) + " - " +
+      fmtTime(e.at) + (e.source ? " - via " + e.source : ""));
+    var body;
+    if (e.type === "audit") {
+      body = h("div", { class: "body" }, e.field === "created" ? "Ticket created"
+        : e.field + ": " + fmtValue(e.old) + " → " + fmtValue(e.new));
+    } else {
+      body = h("div", { class: "body", text: e.body });
+    }
+    return h("li", { class: e.type }, meta, body);
+  }
+
+  function journalList(entries, emptyText) {
+    if (!entries.length) return h("p", { class: "muted", text: emptyText });
+    return h("ul", { class: "journal" }, entries.slice().reverse().map(journalItem));
+  }
+
+  function journalForm(t, kind, title, placeholder) {
+    var id = "j-" + kind;
+    var text = h("textarea", { id: id, placeholder: placeholder });
+    return h("form", {
+      class: "journal-form",
       onsubmit: function (ev) {
         ev.preventDefault();
         if (!text.value.trim()) return;
         api("POST", "/tickets/" + encodeURIComponent(t.number) + "/comments", { body: text.value, type: kind })
           .then(function () { toast("Posted"); viewDetail(t.number); }).catch(fail);
       }
-    }, tabs, text, h("div", null, h("button", { class: "primary", type: "submit" }, "Post"))) : null;
+    }, h("label", { for: id, text: title }), text,
+      h("div", null, h("button", { class: "primary", type: "submit" }, title)));
+  }
 
-    var list = h("ul", { class: "journal" });
-    journal.slice().reverse().forEach(function (e) {
-      var label = e.type === "work_note" ? "Work note" : e.type === "comment" ? "Comment" : "Field change";
-      var who = e.author ? e.author + " (via " + e.actor + ")" : e.actor;
-      var meta = h("div", { class: "meta" }, label + " - " + who + " - " + fmtTime(e.at) +
-        (e.source ? " - via " + e.source : ""));
-      var body;
-      if (e.type === "audit") {
-        body = h("div", { class: "body" }, e.field === "created" ? "Ticket created"
-          : e.field + ": " + fmtValue(e.old) + " → " + fmtValue(e.new));
-      } else {
-        body = h("div", { class: "body", text: e.body });
-      }
-      list.appendChild(h("li", { class: e.type }, meta, body));
+  function summaryBlock(e) {
+    return h("div", { class: "summary-entry" },
+      h("div", { class: "meta" }, journalWho(e) + " - " + fmtTime(e.at)),
+      h("div", { class: "body", text: e.body }));
+  }
+
+  function resolutionReport(t, summaries) {
+    var latest = summaries[summaries.length - 1];
+    var earlier = summaries.slice(0, -1).reverse();
+    return h("div", { class: "report" },
+      h("h3", { text: "Close notes" }),
+      t.close_notes ? h("div", { class: "body", text: t.close_notes })
+        : h("p", { class: "muted", text: "Not resolved yet." }),
+      h("p", { class: "muted" }, t.resolved_at ? "Resolved " + fmtTime(t.resolved_at) : "Resolved: -"),
+      h("h3", { text: "Summary" }),
+      latest ? summaryBlock(latest) : h("p", { class: "muted", text: "No summary yet." }),
+      earlier.length ? h("details", { class: "earlier" },
+        h("summary", { text: "Earlier summaries (" + earlier.length + ")" }),
+        earlier.map(summaryBlock)) : null);
+  }
+
+  function auditTrail(entries) {
+    if (!entries.length) return h("p", { class: "muted", text: "No field changes yet." });
+    return table(["Time", "Field", "Old → New", "Actor", "Source"], entries.slice().reverse().map(function (e) {
+      return h("tr", null,
+        h("td", { text: fmtTime(e.at) }),
+        h("td", { class: "mono", text: e.field }),
+        h("td", { class: "pre-wrap" }, e.field === "created" ? "Ticket created" : fmtValue(e.old) + " → " + fmtValue(e.new)),
+        h("td", { text: journalWho(e) }),
+        h("td", { text: e.source || "" }));
+    }));
+  }
+
+  function drawJournal(t, journal, editable) {
+    var me = session.me;
+    var isRequester = me.role === "requester";
+    var canComment = isRequester ? t.caller === me.username : editable;
+    function ofType(type) { return journal.filter(function (e) { return e.type === type; }); }
+    var notes = ofType("work_note"), comments = ofType("comment"), summaries = ofType("summary");
+    var audits = ofType("audit");
+
+    var defs = [];
+    if (!isRequester) {
+      defs.push({ id: "worknotes", title: "Work notes (" + notes.length + ")", content: [
+        canComment ? journalForm(t, "work_note", "Add work note", "Add a work note (internal)") : null,
+        journalList(notes, "No work notes yet.")] });
+    }
+    defs.push({ id: "comments", title: "Comments (" + comments.length + ")", content: [
+      canComment ? journalForm(t, "comment", "Add comment", "Add a comment (visible to caller)") : null,
+      journalList(comments, "No comments yet.")] });
+    defs.push({ id: "resolution", title: "Resolution report", content: [resolutionReport(t, summaries)] });
+    defs.push({ id: "audit", title: "Audit trail (" + audits.length + ")", content: [auditTrail(audits)] });
+    defs.push({ id: "history", title: "History (" + journal.length + ")", content: [
+      journalList(journal, "No activity yet.")] });
+
+    var wanted = parseHash().params.tab;
+    var current = defs.some(function (d) { return d.id === wanted; }) ? wanted : defs[0].id;
+    var tablist = h("div", { class: "tablist", role: "tablist", "aria-label": "Ticket activity" });
+    var tabs = [], panels = [];
+
+    function selectTab(id, focus) {
+      current = id;
+      tabs.forEach(function (tab, i) {
+        var on = defs[i].id === id;
+        tab.setAttribute("aria-selected", on ? "true" : "false");
+        tab.tabIndex = on ? 0 : -1;
+        panels[i].hidden = !on;
+        if (on && focus) tab.focus();
+      });
+      var url = "#/tickets/" + encodeURIComponent(t.number) + "?tab=" + id;
+      if (location.hash !== url) history.replaceState(null, "", url);
+    }
+
+    defs.forEach(function (d, i) {
+      var tab = h("button", {
+        type: "button", role: "tab", id: "tab-" + d.id, "aria-controls": "tabpanel-" + d.id,
+        "aria-selected": "false", tabindex: "-1",
+        onclick: function () { selectTab(d.id, false); },
+        onkeydown: function (ev) {
+          var next = null;
+          if (ev.key === "ArrowRight") next = (i + 1) % defs.length;
+          else if (ev.key === "ArrowLeft") next = (i - 1 + defs.length) % defs.length;
+          else if (ev.key === "Home") next = 0;
+          else if (ev.key === "End") next = defs.length - 1;
+          if (next === null) return;
+          ev.preventDefault();
+          selectTab(defs[next].id, true);
+        }
+      }, d.title);
+      tabs.push(tab);
+      tablist.appendChild(tab);
+      panels.push(h("div", {
+        class: "panel-body tabpanel", role: "tabpanel", id: "tabpanel-" + d.id,
+        "aria-labelledby": "tab-" + d.id, tabindex: "0"
+      }, d.content));
     });
+    selectTab(current, false);
+
     return h("div", { class: "panel" },
-      h("div", { class: "panel-head" }, h("h2", { text: "Activity" })), form,
-      h("div", { class: "panel-body" }, list));
+      h("div", { class: "panel-head tabs-head" }, tablist), panels);
   }
 
   function fmtValue(v) {

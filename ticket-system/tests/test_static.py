@@ -88,6 +88,29 @@ class StaticFilesTest(ServerTestCase):
         css = self.text("/static/app.css")
         self.assertRegex(css, r"\.journal \.body \{[^}]*white-space: pre-wrap")
 
+    def test_ticket_detail_has_accessible_journal_tabs(self):
+        js = self.text("/static/app.js")
+        for needle in ('role: "tablist"', 'role: "tab"', 'role: "tabpanel"', '"aria-selected"', '"aria-controls"',
+                       '"aria-labelledby"', '"aria-label": "Ticket activity"', '"ArrowRight"', '"ArrowLeft"',
+                       "tab.tabIndex = on ? 0 : -1", "history.replaceState(", '"?tab=" + id',
+                       "parseHash().params.tab"):
+            self.assertIn(needle, js)
+        # tab order and titles with counters; work notes only for non-requesters (first tab = default)
+        order = [js.index(s) for s in ('id: "worknotes"', 'id: "comments"', 'id: "resolution"', 'id: "audit"',
+                                       'id: "history"')]
+        self.assertEqual(order, sorted(order))
+        for title in ('"Work notes (" + notes.length + ")"', '"Comments (" + comments.length + ")"',
+                      '"Resolution report"', '"Audit trail (" + audits.length + ")"',
+                      '"History (" + journal.length + ")"'):
+            self.assertIn(title, js)
+        self.assertRegex(js, r"if \(!isRequester\) \{\s*defs\.push\(\{ id: \"worknotes\"")
+        for text in ('"Add work note"', '"Add comment"', '"Not resolved yet."', '"Earlier summaries ("',
+                     'h("details"', 'ofType("summary")', '["Time", "Field", "Old → New", "Actor", "Source"]'):
+            self.assertIn(text, js)
+        css = self.text("/static/app.css")
+        self.assertRegex(css, r"\.report \.body, \.pre-wrap \{[^}]*white-space: pre-wrap")
+        self.assertIn("[role=tab][aria-selected=true]", css)
+
     def test_tenant_errors_have_readable_texts(self):
         js = self.text("/static/app.js")
         for message in ("tenant mismatch", "tenant inactive", "tenant not found"):

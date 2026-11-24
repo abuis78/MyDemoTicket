@@ -106,8 +106,29 @@ table.list tr:hover td { background: var(--blue-light); }
 .journal li.audit { border-color: #c5ccd3; color: var(--muted); font-size: 13px; }
 .journal .meta { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
 .journal .body { white-space: pre-wrap; }
-.tabs { display: flex; gap: 6px; margin-bottom: 8px; }
-.tabs button.active { background: var(--blue-light); border-color: var(--blue); }
+.journal li.summary { border-color: var(--ok); background: #f3fbf5; }
+
+/* journal tabs on the ticket detail page (role=tablist / tab / tabpanel) */
+.tabs-head { padding-bottom: 0; }
+.tablist { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: -1px; }
+.tablist [role=tab] {
+  border: 1px solid transparent; border-bottom: 0; border-radius: 3px 3px 0 0;
+  background: none; color: var(--muted); padding: 7px 12px;
+}
+.tablist [role=tab]:hover { color: var(--text); background: var(--blue-light); }
+.tablist [role=tab][aria-selected=true] {
+  background: var(--panel); color: var(--text); font-weight: 600;
+  border-color: var(--border); box-shadow: inset 0 2px 0 var(--blue);
+}
+.tablist [role=tab]:focus-visible, .tabpanel:focus-visible { outline: 2px solid var(--blue); outline-offset: 1px; }
+.journal-form { margin-bottom: 14px; }
+.journal-form > div { margin-top: 6px; }
+.report h3 { font-size: 13px; margin: 14px 0 6px; }
+.report h3:first-child { margin-top: 0; }
+.report .body, .pre-wrap { white-space: pre-wrap; }
+.summary-entry { border-left: 3px solid var(--ok); background: #f3fbf5; padding: 6px 12px; margin-bottom: 10px; }
+.summary-entry .meta { font-size: 12px; color: var(--muted); margin-bottom: 3px; }
+.earlier summary { cursor: pointer; color: var(--blue); margin: 6px 0; }
 
 .login { max-width: 360px; margin: 70px auto; }
 .login .panel-body > div { margin-bottom: 12px; }
