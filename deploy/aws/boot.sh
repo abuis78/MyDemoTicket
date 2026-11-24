@@ -11,7 +11,14 @@ TOKEN=$(curl -sS -X PUT -H "X-aws-ec2-metadata-token-ttl-seconds: 60" http://169
 IP=$(curl -sS -H "X-aws-ec2-metadata-token: $TOKEN" http://169.254.169.254/latest/meta-data/public-ipv4)
 HOSTS="$(echo "$IP" | tr . -).sslip.io"
 DOMAIN=$(param DOMAIN)
-[ -n "$DOMAIN" ] && [ "$DOMAIN" != "none" ] && HOSTS="$DOMAIN,$HOSTS"
+ALB_PORT=$(param ALB_PORT 2>/dev/null || echo none)
+ALB_ARGS=()
+if [ -n "$ALB_PORT" ] && [ "$ALB_PORT" != "none" ]; then
+  # $DOMAIN is served by the load balancer (TLS there), Caddy only adds a plain-HTTP listener for it
+  ALB_ARGS=(--alb-port "$ALB_PORT")
+elif [ -n "$DOMAIN" ] && [ "$DOMAIN" != "none" ]; then
+  HOSTS="$DOMAIN,$HOSTS"
+fi
 
 # Admin credentials: only read by the app when the database is empty (first start).
 umask 077
@@ -23,5 +30,5 @@ mkdir -p /etc/mydemoticket
 } >/etc/mydemoticket/env
 umask 022
 
-"$SRC/deploy/install.sh" --domain "$HOSTS" --python /usr/bin/python3
+"$SRC/deploy/install.sh" --domain "$HOSTS" --python /usr/bin/python3 "${ALB_ARGS[@]}"
 echo "MyDemoTicket boot done: https://${HOSTS//,/ https://}"
