@@ -18,15 +18,37 @@ Label: `mydemoticket`. Runs on new artifacts.
 
 1. Collects new artifacts with label `mydemoticket_event` (pushed by the ticket system).
 2. Ignores artifacts whose `cef.source` is `soar` (change came from SOAR – loop prevention).
-3. With `cef.esFindingId`: Splunk app action **update event** on asset `SPLUNK_ASSET`
-   (default `splunk`) with
-   - `event_ids` = `esFindingId`
-   - `integer_status` from `ticketState`: new→1 New, in_progress→2 In Progress, on_hold→3 Pending,
-     resolved→4 Resolved, closed/cancelled→5 Closed
-   - `comment` = `MyDemoTicket <number> (<event>, state <state>): <cef.comment>`
-   - `owner` = `cef.assignedTo` (switch off with `MIRROR_OWNER = False` if ticket users are not ES users)
-   - On failure a note is added to the container.
-4. Without `esFindingId`: a markdown note with the change is added to the container.
+3. Target: `cef.esInvestigationId` (ES 8 investigation GUID) wins over `cef.esFindingId`.
+   A missing `esInvestigationId` field (older ticket servers) is treated as empty.
+4. **Notes** (every event with a non-empty `cef.comment`, i.e. comments and work notes):
+   Enterprise Security app action **add finding or investigation note** on asset `ES_ASSET`
+   (default `builtin_mc_connector`) with `id` = investigation GUID or finding id and
+   `content` = `MyDemoTicket <number> – <type>/<author>: <text>`. Author is `cef.commentAuthor`,
+   else `cef.actor`; type comes from `cef.commentType` (`comment`/`work_note`) and is left out when
+   the ticket server does not send it.
+5. **Status**, only on `ticket.created` / `ticket.state_changed` (comments and other updates do not
+   touch the status). Mapping: new→1 New, in_progress→2 In Progress, on_hold→3 Pending,
+   resolved→4 Resolved, closed/cancelled→5 Closed.
+   - Finding: Splunk app action **update event** on asset `SPLUNK_ASSET` (default `splunk`) with
+     `event_ids`, `integer_status` and `owner` = `cef.assignedTo` (switch off with
+     `MIRROR_OWNER = False`). No `comment`: in ES 8 it would appear as an extra "Finding Update" note.
+   - Investigation: only for resolved/closed/cancelled, ES app action **update finding or
+     investigation** with `id` = GUID, `status` (4 or 5) and optional `disposition`
+     (`INVESTIGATION_CLOSE_DISPOSITION`, e.g. `disposition:1`).
+6. Notes and status are separate actions with separate callbacks: a failing note does not stop the
+   status update. Every failure adds a note to the container.
+7. Without `esInvestigationId` and `esFindingId`: a markdown note with the change is added to the
+   container.
+
+### ES 8 notes (why not `update event` comments)
+ES 8 keeps the `update event` status, but the comment does not land in `incident_review_lookup`;
+it only shows up as a note titled "Finding Update" written by the Splunk app user. Notes are now
+written with the ES app (SOAR app "Enterprise Security", app ID 198 on the Cloud SOAR), which wraps
+the ES 8 API "Create a note in a finding or investigation" (POST):
+https://help.splunk.com/en/splunk-enterprise-security-8/api-reference/8.4/splunk-enterprise-security-api-reference/findings/public_v2_create_note_in_investigation
+Verified live 2026-11-24 against finding `<guid>@@notable@@time<epoch>`: HTTP 201, note readable
+via **get notes in finding or investigation**. ES stores `title` as the first content line, so
+the playbook sends no title.
 
 ## mydemoticket_ticket_from_es (Splunk ES → ticket)
 Label: `notable` (adjust to the label your Splunk app ingests ES notables with). Runs on new artifacts.
@@ -42,13 +64,19 @@ Label: `notable` (adjust to the label your Splunk app ingests ES notables with).
 | File | Constant | Default |
 |---|---|---|
 | `mydemoticket_es_mirror.py` | `SPLUNK_ASSET` | `splunk` |
+| `mydemoticket_es_mirror.py` | `ES_ASSET` | `builtin_mc_connector` |
 | `mydemoticket_es_mirror.py` | `MIRROR_OWNER` | `True` |
+| `mydemoticket_es_mirror.py` | `INVESTIGATION_CLOSE_DISPOSITION` | `""` (not sent) |
 | `mydemoticket_ticket_from_es.py` | `MYDEMOTICKET_ASSET` | `mydemoticket` |
 | `mydemoticket_ticket_from_es.py` | `ASSIGNMENT_GROUP`, `CATEGORY` | `SOC`, `security_incident` |
 
 ## Known limits
-- `update event` parameter names (`event_ids`, `integer_status`, `comment`, `owner`) follow the
-  Splunk app for SOAR; check them against the installed app version.
+- Parameter names are checked against the Cloud SOAR app schemas (`GET /rest/app_action?_filter_app=163`
+  Splunk 4.0.2, `?_filter_app=198` Enterprise Security 6.8.0); check them after app upgrades.
+- The investigation path (`esInvestigationId`, **update finding or investigation**) is covered by
+  unit tests only, not yet by a live run from this playbook.
+- Owner changes without a state change are not mirrored any more (no `update event` without a
+  state change).
 - `mydemoticket_ticket_from_es` does not check whether a ticket already exists for the container.
   It runs once per batch of new artifacts; several ES artifacts added later can create more tickets.
 
