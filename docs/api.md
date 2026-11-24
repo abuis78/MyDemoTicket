@@ -58,7 +58,7 @@ export TOKEN=...   # an API token, see "Tokens" below; never commit it
 | `caller` | string | username; defaults to the creating user (requesters: always themselves) |
 | `category` | string | free text, max 100 |
 | `custom_fields` | object | name → value, validated against custom field definitions |
-| `external_refs` | object | free key → scalar value; conventions `soar_container_id`, `es_finding_id` |
+| `external_refs` | object | free key → scalar value; conventions `soar_container_id`, `es_finding_id` (Splunk ES finding), `es_investigation_id` (Splunk ES investigation) |
 | `created_at`, `updated_at`, `resolved_at` | string | read-only |
 | `close_notes` | string | required (non-empty) to move to `resolved` |
 
@@ -81,12 +81,18 @@ Reopening (`resolved` → `in_progress`) clears `resolved_at`.
 ```json
 {"id": 7, "type": "comment", "body": "We are looking into it", "actor": "analyst1", "author": null, "source": "web", "at": "2026-11-24T14:41:00Z"}
 {"id": 8, "type": "work_note", "body": "IOC enrichment done", "actor": "soar", "author": "jdoe", "source": "soar", "at": "..."}
+{"id": 10, "type": "summary", "body": "Root cause: phishing mail.\nMailbox cleaned.", "actor": "soar", "author": "ai-assistant", "source": "soar", "at": "..."}
 {"id": 9, "type": "audit", "field": "state", "old": "new", "new": "in_progress", "actor": "analyst1", "author": null, "source": "web", "at": "..."}
 ```
 
 `actor` is always the user of the token or session. `author` is the optional real
 author an integration wrote on behalf of (see `POST /tickets/{number}/comments`),
 otherwise `null`. The web UI shows `jdoe (via soar)` when `author` is set.
+
+Journal `type`: `comment` (visible to the caller), `work_note` (internal), `summary`
+(AI or resolution summary, visible like a comment) and `audit` (field change). The
+ticket object has no summary field: the UI shows the newest `summary` entry of the
+journal in the tab "Resolution report" (older ones collapsed).
 
 Audit `field` is the ticket field name, `custom_fields.<name>` / `external_refs.<key>`
 for merged objects, or `created` for the creation entry. `old`/`new` keep their JSON types.
@@ -102,7 +108,7 @@ that tenant's data.
 | `admin` | tenant admin: everything inside the own tenant, including users, teams, custom fields, webhooks; cannot grant `platform_admin` |
 | `agent` | reads all tickets of the tenant; changes/comments only tickets of own team, assigned to self, or fully unassigned (else `403`); may read `/users` and `/teams` |
 | `integration` | like agent, but may change all tickets of the tenant (for SOAR) |
-| `requester` | creates/reads/comments own tickets (`caller`); may only set `state: cancelled` on own tickets; never sees work notes; `403` on `/users`, `/teams`, admin endpoints |
+| `requester` | creates/reads/comments own tickets (`caller`); may only set `state: cancelled` on own tickets; never sees work notes; may read but not write summaries; `403` on `/users`, `/teams`, admin endpoints |
 
 ## Tenants (multi-tenancy)
 
@@ -306,7 +312,24 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
   $MDT/tickets/TKT0001001/comments
 ```
 
-`type` is `comment` (default, visible to the caller) or `work_note` (internal).
+`type` is `comment` (default, visible to the caller), `work_note` (internal) or
+`summary` (AI or resolution summary, visible to the caller like a comment); other
+values → `422`.
+
+| Role | `comment` | `work_note` | `summary` |
+|---|---|---|---|
+| `agent`, `admin`, `integration`, `platform_admin` | yes | yes | yes |
+| `requester` (own tickets only) | yes | `403` | `403` |
+
+Agents need modify rights on the ticket as for every write (own team, assigned to self
+or unassigned).
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -H "X-MyDemoTicket-Source: soar" \
+  -d '{"body": "Root cause: phishing mail.\nMailbox cleaned, password reset.", "type": "summary", "author": "ai-assistant"}' \
+  $MDT/tickets/TKT0001001/comments
+```
 
 Optional `author`: the real person the integration writes for (e.g. the ES
 analyst). String, trimmed, 1–64 characters, no control characters (else `422`);
@@ -322,7 +345,9 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 #  "author": "jdoe", "source": "soar", "at": "..."}
 ```
 
-The audit event `ticket.comment` carries `details.author` (or `null`).
+The audit event `ticket.comment` carries `details.type` (`comment`, `work_note` or
+`summary`) and `details.author` (or `null`). Every type emits the webhook event
+`ticket.commented` with the journal entry as `comment` (so `comment.type` tells them apart).
 
 ## Custom fields
 
@@ -510,11 +535,15 @@ Each event results in (header `ph-auth-token`, JSON):
     "source_data_identifier": "<delivery_id>", "run_automation": true,
     "cef": {"ticketNumber": "TKT0001001", "ticketState": "resolved", "ticketPriority": 2,
             "assignmentGroup": "SOC L1", "assignedTo": "analyst1", "event": "ticket.state_changed",
-            "changes": "{\"state\": {...}}", "comment": "", "commentAuthor": "", "customFields": "{...}",
-            "esFindingId": "finding-placeholder", "source": "web", "tenant": "soc-games"}}
+            "changes": "{\"state\": {...}}", "comment": "", "commentAuthor": "", "commentType": "",
+            "customFields": "{...}", "esFindingId": "finding-placeholder", "esInvestigationId": "",
+            "source": "web", "tenant": "soc-games"}}
    ```
    `changes` and `customFields` are JSON strings. For `ticket.commented`,
-   `comment` is the body and `commentAuthor` the optional author (else `""`). `cef.source` is an addition for
+   `comment` is the body, `commentAuthor` the optional author (else `""`) and
+   `commentType` the journal type (`comment`, `work_note`, `summary`; else `""`).
+   `esFindingId` / `esInvestigationId` come from `external_refs.es_finding_id` /
+   `external_refs.es_investigation_id` (`""` if not set). `cef.source` is an addition for
    playbook-side loop checks, `cef.tenant` is the tenant slug of the ticket. The
    container name stays `<number>: <short description>`.
 
