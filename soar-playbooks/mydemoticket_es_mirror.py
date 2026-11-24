@@ -44,7 +44,7 @@ STATE_TO_ES_STATUS = {
 }
 STATE_EVENTS = ("ticket.created", "ticket.state_changed")
 INVESTIGATION_STATUS_STATES = ("resolved", "closed", "cancelled")
-COMMENT_TYPE_LABELS = {"comment": "comment", "work_note": "work note"}
+COMMENT_TYPE_LABELS = {"comment": "comment", "work_note": "work note", "summary": "summary"}
 
 
 def _new_mirror_events(container):
