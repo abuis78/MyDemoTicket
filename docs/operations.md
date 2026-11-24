@@ -64,6 +64,17 @@ mdt-backup-<ts>.tgz -C /var/lib`, make sure it is owned by `mydemoticket` and mo
 0700 (`sudo chown -R mydemoticket:mydemoticket /var/lib/mydemoticket`), start the
 service.
 
+What else to keep with the backup (not inside the data directory): `/etc/mydemoticket/env`
+(admin bootstrap values, HEC settings; root-only) and, for option C, the keychain items and SSM
+parameters listed in [installation.md](installation.md#keychain-items-and-ssm-parameters).
+The data directory itself contains `initial-credentials.txt` and `logs/audit.log`.
+
+Scheduled backup (example, daily at 02:30, keeps 14 days) – `sudo crontab -e`:
+
+```cron
+30 2 * * * systemctl stop mydemoticket && tar czf /var/backups/mdt-$(date -u +\%Y\%m\%d).tgz -C /var/lib mydemoticket; systemctl start mydemoticket; find /var/backups -name 'mdt-*.tgz' -mtime +14 -delete
+```
+
 ### Online copy without stopping (any option)
 
 Python's `sqlite3` backup API (standard library) writes a consistent copy of the

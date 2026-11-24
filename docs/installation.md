@@ -151,6 +151,11 @@ deploy/aws/deploy.sh --dry-run                    # read-only: checks and plan
 deploy/aws/deploy.sh                              # create or update (idempotent)
 ```
 
+> **Always set `DOMAIN`, `ALB_NAME` and `HEC_URL` explicitly.** The script defaults are the
+> values of the demo environment (`ticket.soc-games.com`, ALB `alb-aws`, HEC on
+> `splunk.soc-games.com`); without your own values it would look for a load balancer and a
+> Splunk that do not exist in your account. `ALB_NAME=none` and `HEC_URL=none` switch both off.
+
 The script waits up to 10 minutes for `https://<ip>.sslip.io/api/v1/health` and
 prints the instance id, public IP and the DNS record to set.
 
@@ -320,7 +325,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 
 SOAR (and the MCP server) authenticate with a Bearer token of a user in the
 tenant they work in. Use role `integration` (may change all tickets of the
-tenant). The SOAR app's *test connectivity* accepts only `integration`, `agent` or
+tenant, see `can_modify_ticket` in `ticket-system/mydemoticket/auth.py`). The SOAR app's *test connectivity* accepts only `integration`, `agent` or
 `admin` – not a `platform_admin` token.
 
 In `soc-games` the seeded user `soar` already exists (token in
@@ -353,6 +358,16 @@ Two directions:
   (`source_data_identifier` = ticket number, label `mydemoticket`) and one artifact
   per change (label `mydemoticket_event`, `run_automation: true`), which starts the
   ES mirror playbook.
+
+### 9.0 SOAR automation user
+
+The webhook (ticket → SOAR) and the REST imports below need a SOAR `ph-auth-token`:
+SOAR → *Administration → User Management → Users → + User*, type **Automation**, with a role
+that may create containers and artifacts and run playbooks (for the REST imports also: install
+apps, import playbooks, edit event settings – e.g. the built-in *Administrator* role). Under
+*Allowed IPs* enter `any` or the egress IP of the ticket server. Open the user and copy the
+token (shown as JSON; use only the value of `ph-auth-token`). Do not click *Generate* later –
+that invalidates the token stored in the webhook.
 
 ### 9.1 Build and install the app
 
@@ -493,6 +508,28 @@ close notes. The ticket needs `external_refs.es_finding_id` and/or
 `external_refs.es_investigation_id` (the SOAR app's *create ticket* / *update ticket*
 set them from `es_finding_id` / `es_investigation_id`).
 
+### 10b. Optional: ticket from ES notable (`mydemoticket_ticket_from_es`)
+
+Creates a MyDemoTicket ticket from an ES notable container (sets `es_finding_id` from the
+artifact's `event_id`). It is only syntax-checked, not live-tested.
+
+1. Set the constants in `soar-playbooks/mydemoticket_ticket_from_es.py` (`MYDEMOTICKET_ASSET`
+   = the asset name from 9.2, `ASSIGNMENT_GROUP` = an existing team of the integration user's
+   tenant, default `SOC L1`).
+2. The playbook is bound to container label **`notable`** (`labels` in the `.json`). If your ES
+   notables arrive in SOAR with a different label, change `labels` in the `.json` or the
+   playbook's label after import. It does not check whether a ticket already exists for the
+   container.
+3. Package, import and activate like section 10:
+
+   ```bash
+   cd soar-playbooks
+   tar -czf "${TMPDIR:-/tmp}/mydemoticket_ticket_from_es.tgz" mydemoticket_ticket_from_es.json mydemoticket_ticket_from_es.py
+   ```
+
+   Then *Playbooks → Import Playbook* (or `POST /rest/import_playbook` as in section 10) and
+   activate it.
+
 ## 11. Splunk: audit log via HEC, dashboards, roles
 
 Full reference: [logging.md](logging.md). Files in [`splunk/`](../splunk/).
@@ -506,6 +543,10 @@ Full reference: [logging.md](logging.md). Files in [`splunk/`](../splunk/).
 3. **HEC token:** *Settings → Data inputs → HTTP Event Collector → New Token*, source type
    `mydemoticket:audit`, allowed and default index `mydemoticket`, indexer acknowledgement off
    ([`inputs.conf.example`](../splunk/inputs.conf.example)). HEC must be enabled in *Global Settings*.
+   HEC URL format: Splunk Enterprise `https://<splunk-host>:8088`; Splunk Cloud Platform
+   `https://http-inputs-<stack>.splunkcloud.com:443` (see Splunk docs "Set up and use HTTP Event
+   Collector"). The ticket system appends `/services/collector/event` if the URL has no
+   `/services/collector` path.
 4. **Configure the ticket system** with `MYDEMOTICKET_HEC_URL`, `MYDEMOTICKET_HEC_TOKEN`,
    `MYDEMOTICKET_HEC_INDEX=mydemoticket` (and `MYDEMOTICKET_HEC_VERIFY_TLS`):
    * local: export them before `python3 -m mydemoticket`;
@@ -546,7 +587,19 @@ Full reference: [mcp-server/README.md](../mcp-server/README.md).
    ```
 
    Options: `--scope user|project`, `--name <name>`, `--uninstall`. Without the `claude` CLI the
-   script prints the Claude Desktop snippet.
+   script prints the Claude Desktop snippet. That snippet has no `env` block – add your server URL
+   by hand, otherwise the MCP server uses the demo default `https://ticket.soc-games.com`:
+
+   ```json
+   {
+     "mcpServers": {
+       "mydemoticket": {
+         "command": "/path/to/MyDemoTicket/mcp-server/run.sh",
+         "env": { "MYDEMOTICKET_URL": "https://ticket.example.com" }
+       }
+     }
+   }
+   ```
 
 | Variable | Default | Meaning |
 |---|---|---|
