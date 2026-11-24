@@ -186,9 +186,74 @@ MIGRATIONS = [
     UPDATE webhook_deliveries SET tenant_id = (SELECT w.tenant_id FROM webhooks w
                                                WHERE w.id = webhook_deliveries.webhook_id);
     """,
+    # 3: optional comment author (the real person behind an integration comment,
+    # e.g. the ES analyst). Additive only: existing rows keep author = NULL.
+    """
+    ALTER TABLE journal ADD COLUMN author TEXT;
+    """,
 ]
 
 FIRST_TICKET_NUMBER = 1001
+
+
+def _json_member(doc, path):
+    """Resolve a single-member path ``$."key"`` (the only form the API uses)."""
+    if not isinstance(path, str) or not path.startswith('$."') or not path.endswith('"'):
+        raise ValueError("unsupported JSON path")
+    try:
+        obj = json.loads(doc) if doc is not None else None
+    except ValueError:
+        return False, None
+    key = path[3:-1]
+    if not isinstance(obj, dict) or key not in obj:
+        return False, None
+    return True, obj[key]
+
+
+def _py_json_type(doc, path):
+    found, value = _json_member(doc, path)
+    if not found:
+        return None
+    if value is None:
+        return "null"
+    if value is True:
+        return "true"
+    if value is False:
+        return "false"
+    if isinstance(value, int):
+        return "integer"
+    if isinstance(value, float):
+        return "real"
+    if isinstance(value, str):
+        return "text"
+    return "array" if isinstance(value, list) else "object"
+
+
+def _py_json_extract(doc, path):
+    found, value = _json_member(doc, path)
+    if not found or value is None:
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float, str)):
+        return value
+    return json.dumps(value, separators=(",", ":"))
+
+
+def ensure_json_functions(conn):
+    """Make json_extract/json_type available on ``conn``.
+
+    Returns True when SQLite's built-in JSON functions are present. Otherwise
+    registers small Python equivalents (enough for ``$."key"`` paths) and
+    returns False, so ticket filtering stays in SQL and totals stay correct.
+    """
+    try:
+        conn.execute("SELECT json_extract('{\"a\":1}', '$.a'), json_type('{}')").fetchone()
+        return True
+    except sqlite3.OperationalError:
+        conn.create_function("json_extract", 2, _py_json_extract)
+        conn.create_function("json_type", 2, _py_json_type)
+        return False
 
 
 def utcnow():
@@ -244,6 +309,7 @@ class Database:
         self.conn.execute("PRAGMA foreign_keys = ON")
         if path != ":memory:":
             self.conn.execute("PRAGMA journal_mode = WAL")
+        self.json1 = ensure_json_functions(self.conn)
         self.migrate()
 
     # -- migrations -------------------------------------------------------
@@ -256,21 +322,22 @@ class Database:
         Foreign keys are switched off while migrating (SQLite only allows that
         outside a transaction) so that rebuilding a table never cascades into the
         rows that reference it; ``PRAGMA foreign_key_check`` must be clean before
-        a step is committed. Before upgrading an existing database file, a copy is
-        written to ``<db>.pre-v<N>.bak`` (once per target version).
+        a step is committed. Before step N is applied to an existing database file,
+        a copy of the state before that step is written to ``<db>.pre-v<N>.bak``
+        (once per target version; an existing backup is never overwritten).
         """
         with self.lock:
             current = self.schema_version()
             if current >= len(MIGRATIONS):
                 return
-            if current > 0:
-                self._backup_before(len(MIGRATIONS))
             self.conn.execute("PRAGMA foreign_keys = OFF")
             try:
                 for index, script in enumerate(MIGRATIONS):
                     version = index + 1
                     if version <= current:
                         continue
+                    if current > 0:  # existing data: keep the pre-step state
+                        self._backup_before(version)
                     self.conn.execute("BEGIN IMMEDIATE")
                     try:
                         for statement in script.split(";"):

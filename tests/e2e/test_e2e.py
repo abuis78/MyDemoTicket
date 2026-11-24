@@ -532,6 +532,36 @@ class TestSoarToTicket(E2ETestCase):
         self.assertEqual([c for c in conn.containers if c["source_data_identifier"] == number], [])
         self.assertGreaterEqual(r.get_summary()["skipped"], 1)
 
+    def test_find_by_es_finding_then_comment_with_author(self):
+        finding = "e2e-finding-%s" % secrets.token_hex(4)
+        _, r = self.connector("create_ticket", {"short_description": "E2E idempotent ticket",
+                                                "es_finding_id": finding}, container_id=4712)
+        number = r.get_summary()["ticket_number"]
+        # decoys: a similar finding id and the same id as another key
+        self.connector("create_ticket", {"short_description": "E2E decoy", "es_finding_id": finding + "0"})
+        decoy = self.ok(self.admin.post("/tickets", {"short_description": "E2E decoy 2",
+                                                     "external_refs": {"other_id": finding}}), 201)
+        self.assertNotEqual(decoy["number"], number)
+
+        _, r = self.connector("list_tickets", {"external_ref_key": "es_finding_id", "external_ref_value": finding})
+        self.assertEqual([t["number"] for t in r.get_data()], [number])
+        self.assertEqual(r.get_summary(), {"total": 1, "returned": 1})
+        self.assertEqual(r.get_data()[0]["external_refs"]["es_finding_id"], finding)
+
+        _, r = self.connector("add_comment", {"number": number, "body": "Contained.\nForensics next.",
+                                              "author": "jdoe"})
+        entry = r.get_data()[0]
+        self.assertEqual((entry["author"], entry["actor"]), ("jdoe", "soar"))
+
+        comments = [e for e in self.journal(number) if e["type"] == "comment"]
+        self.assertEqual([(e["author"], e["actor"], e["source"], e["body"]) for e in comments],
+                         [("jdoe", "soar", "soar", "Contained.\nForensics next.")])
+        _, r = self.connector("get_journal", {"number": number})
+        self.assertEqual([e["author"] for e in r.get_data() if e["type"] == "comment"], ["jdoe"])
+        generic = self.wait_generic(number, 2)
+        commented = [d["payload"] for d in generic if d["payload"]["event"] == "ticket.commented"]
+        self.assertEqual([(c["comment"]["author"], c["actor"]) for c in commented], [("jdoe", "soar")])
+
     def test_invalid_transition_reported_as_error(self):
         _, r = self.connector("create_ticket", {"short_description": "E2E closed directly"})
         number = r.get_summary()["ticket_number"]

@@ -16,6 +16,7 @@ import http.client
 import json
 import logging
 import os
+import re
 import ssl
 import sys
 import urllib.error
@@ -187,6 +188,11 @@ TOOLS = [
             "updated_since": {"type": "string",
                               "description": "ISO-8601 UTC timestamp, e.g. \"2026-11-24T00:00:00Z\"; "
                                              "returns tickets with updated_at >= this value."},
+            "external_ref": {"type": "object",
+                             "description": "Exact match on external references, key -> value, all keys must "
+                                            "match (AND). Keys: [a-z0-9_]{1,64}; values are compared as text "
+                                            "(1133 matches \"1133\"). Example: {\"es_finding_id\": \"1133\"}. "
+                                            "Use it to find an existing ticket before creating a new one."},
             "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20,
                       "description": "Page size, 1-100 (default 20)."},
             "offset": {"type": "integer", "minimum": 0, "default": 0,
@@ -265,6 +271,10 @@ TOOLS = [
             "body": {"type": "string", "minLength": 1, "description": "Text of the comment or work note."},
             "type": {"type": "string", "enum": ["comment", "work_note"], "default": "comment",
                      "description": "comment (default, visible to the caller) or work_note (internal)."},
+            "author": {"type": "string", "minLength": 1, "maxLength": 64,
+                       "description": "Optional real author on whose behalf you write, e.g. \"jdoe\" "
+                                      "(1-64 characters, no control characters). The journal shows "
+                                      "\"jdoe (via <token user>)\"; actor stays the token's user."},
         }, ["number", "body"]),
         "annotations": dict(_write(False), title="Add comment or work note"),
     },
@@ -354,8 +364,24 @@ def tool_whoami(api, args):
     return api.request("GET", "/me")
 
 
+EXTERNAL_REF_KEY_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+
+
+def _ref_text(value):
+    """external_ref filter value as the server compares it (text; booleans as true/false)."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (str, int, float)):
+        return str(value)
+    raise ToolError("external_ref values must be strings, numbers or booleans")
+
+
 def tool_list_tickets(api, args):
     query = _pick(args, ("state", "assignment_group", "assigned_to", "q", "updated_since"))
+    for key in sorted(args.get("external_ref") or {}):
+        if not EXTERNAL_REF_KEY_RE.match(key):
+            raise ToolError("external_ref key %r is invalid; allowed: [a-z0-9_]{1,64}, e.g. es_finding_id" % key)
+        query["external_ref." + key] = _ref_text(args["external_ref"][key])
     if "state" in query:
         bad = [s for s in (p.strip() for p in query["state"].split(",")) if s not in STATES]
         if bad:
@@ -395,6 +421,8 @@ def tool_set_state(api, args):
 
 def tool_add_comment(api, args):
     body = {"body": args["body"], "type": args.get("type", "comment")}
+    if "author" in args:
+        body["author"] = args["author"]
     return api.request("POST", ticket_path(args["number"]) + "/comments", body=body)
 
 

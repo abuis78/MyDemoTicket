@@ -601,7 +601,8 @@
     var list = h("ul", { class: "journal" });
     journal.slice().reverse().forEach(function (e) {
       var label = e.type === "work_note" ? "Work note" : e.type === "comment" ? "Comment" : "Field change";
-      var meta = h("div", { class: "meta" }, label + " - " + e.actor + " - " + fmtTime(e.at) +
+      var who = e.author ? e.author + " (via " + e.actor + ")" : e.actor;
+      var meta = h("div", { class: "meta" }, label + " - " + who + " - " + fmtTime(e.at) +
         (e.source ? " - via " + e.source : ""));
       var body;
       if (e.type === "audit") {

@@ -77,12 +77,12 @@ Example for a local server: `claude mcp add mydemoticket-local -e MYDEMOTICKET_U
 | Tool | API | Kind |
 |---|---|---|
 | `whoami` | `GET /me` | read |
-| `list_tickets` | `GET /tickets` – `state` (one or comma list), `assignment_group`, `assigned_to`, `q`, `updated_since`, `limit` 1–100 (default 20), `offset` | read |
+| `list_tickets` | `GET /tickets` – `state` (one or comma list), `assignment_group`, `assigned_to`, `q`, `updated_since`, `external_ref` (object key → value, exact match as text, AND; e.g. `{"es_finding_id": "1133"}`), `limit` 1–100 (default 20), `offset` | read |
 | `get_ticket` | `GET /tickets/{number}` | read |
 | `create_ticket` | `POST /tickets` – `short_description` (required), `description`, `priority` 1–4, `assignment_group`, `assigned_to`, `category`, `custom_fields` | write |
 | `update_ticket` | `PATCH /tickets/{number}` – only the fields passed; `custom_fields`/`external_refs` are merged | write, idempotent |
 | `set_state` | `PATCH /tickets/{number}` – `state` new, in_progress, on_hold, resolved, closed, cancelled; `close_notes` required for resolved (checked before calling the API) | write, idempotent |
-| `add_comment` | `POST /tickets/{number}/comments` – `body`, `type` comment (default) or work_note | write |
+| `add_comment` | `POST /tickets/{number}/comments` – `body`, `type` comment (default) or work_note, optional `author` (1–64 chars; journal shows `author (via <token user>)`) | write |
 | `get_journal` | `GET /tickets/{number}/journal` | read |
 | `list_custom_fields` | `GET /custom-fields` | read |
 | `reports_summary` | `GET /reports/summary` – optional `since`; says "not available on this server version" if the server has no such endpoint | read |
@@ -100,6 +100,8 @@ No tool deletes anything.
 * "Resolve TKT0001001 as false positive and explain why in the close notes."
 * "What happened on TKT0001001? Summarise the journal."
 * "Which tickets changed since this morning?"
+* "Is there already a ticket for ES finding 1133? If not, create one." (uses `list_tickets` with `external_ref`)
+* "Add a comment to TKT0001001 on behalf of jdoe: containment done." (uses `add_comment` with `author`)
 
 ## Security
 

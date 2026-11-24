@@ -1,6 +1,7 @@
 """Local stdlib HTTP mock of the MyDemoTicket API (/api/v1), bound to 127.0.0.1 port 0."""
 
 import json
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
@@ -14,6 +15,13 @@ TRANSITIONS = {
     "closed": set(),
     "cancelled": set(),
 }
+
+
+def _ref_text(value):
+    """Stored external_refs scalar as text, like the real API (1133 -> '1133', True -> 'true')."""
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    return str(value)
 
 
 class MockTicketAPI(object):
@@ -110,6 +118,13 @@ class MockTicketAPI(object):
                 items = [t for t in items if t["state"] == query["state"]]
             if query.get("updated_since"):
                 items = [t for t in items if t["updated_at"] >= query["updated_since"]]
+            for name, value in sorted(query.items()):
+                if name.startswith("external_ref."):
+                    key = name[len("external_ref."):]
+                    if not re.match(r"^[a-z0-9_]{1,64}$", key):
+                        return 422, {"error": "invalid external_ref filter key"}
+                    items = [t for t in items if key in t["external_refs"]
+                             and _ref_text(t["external_refs"][key]) == value]
             offset, limit = int(query.get("offset", 0)), int(query.get("limit", 100))
             return 200, {"items": items[offset:offset + limit], "total": len(items)}
         if parts == ["tickets"] and method == "POST":
@@ -143,6 +158,11 @@ class MockTicketAPI(object):
             if parts[2:] == ["comments"] and method == "POST":
                 if body.get("type") not in ("comment", "work_note"):
                     return 422, {"error": "invalid type"}
-                return 201, {"id": "99", "type": body["type"], "body": body["body"],
-                             "at": "2026-11-24T12:00:00Z"}
+                author = body.get("author")
+                if author is not None:
+                    if not isinstance(author, str) or not 1 <= len(author.strip()) <= 64:
+                        return 422, {"error": "'author' must be 1..64 characters"}
+                    author = author.strip()
+                return 201, {"id": "99", "type": body["type"], "body": body["body"], "actor": "soar-integration",
+                             "author": author, "at": "2026-11-24T12:00:00Z"}
         return 404, {"error": "not found"}
