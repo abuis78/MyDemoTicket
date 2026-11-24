@@ -260,6 +260,9 @@ class Handler(BaseHTTPRequestHandler):
         return "unknown"
 
     def _log_denied(self, status, message, principal, ctx, source):
+        path = urllib.parse.urlsplit(self.path).path
+        if status == 401 and path == "/api/v1/auth/login":
+            return  # already logged as auth.login/failure with the user's tenant
         self.app.audit.log(
             "access.denied", tenant=self._denied_tenant(principal, ctx),
             actor=principal.username if principal is not None else None,
