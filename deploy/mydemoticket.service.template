@@ -1,0 +1,31 @@
+# Rendered by deploy/install.sh - placeholders: @USER@ @PYTHON@ @INSTALL_DIR@ @DATA_DIR@ @PORT@ @ENV_FILE@
+# managed by mydemoticket
+[Unit]
+Description=MyDemoTicket ticketing server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=@USER@
+Group=@USER@
+WorkingDirectory=@INSTALL_DIR@
+Environment=PYTHONUNBUFFERED=1
+Environment=MYDEMOTICKET_DATA_DIR=@DATA_DIR@
+# Optional: MYDEMOTICKET_ADMIN_PASSWORD / MYDEMOTICKET_ADMIN_TOKEN (root-only file, 0600)
+EnvironmentFile=-@ENV_FILE@
+ExecStart=@PYTHON@ -m mydemoticket --host 127.0.0.1 --port @PORT@ --data-dir @DATA_DIR@ --secure-cookies
+Restart=on-failure
+RestartSec=3
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=@DATA_DIR@
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mockup - Ticket list - MyDemoTicket</title>
+  <!-- Static mockup: uses the real UI stylesheet; all data is placeholder data. -->
+  <link rel="stylesheet" href="../../ticket-system/mydemoticket/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="ticket-list.html">MyDemoTicket</a>
+    <form class="global-search"><input type="search" placeholder="Search tickets" aria-label="Search tickets"></form>
+    <div class="userbox"><span>Analyst One (agent)</span><button type="button" class="link">Log out</button></div>
+  </header>
+  <div class="layout">
+    <nav class="sidebar">
+      <div class="nav-section">Tickets</div>
+      <a class="active" href="ticket-list.html">All open</a>
+      <a href="ticket-list.html">Assigned to me</a>
+      <a href="ticket-list.html">Unassigned</a>
+      <a href="ticket-list.html">All tickets</a>
+      <a href="ticket-detail.html">Create new</a>
+      <div class="nav-section">Administration</div>
+      <a href="admin-custom-fields.html">Users</a>
+      <a href="admin-custom-fields.html">Teams</a>
+      <a href="admin-custom-fields.html">Custom fields</a>
+      <a href="admin-custom-fields.html">Webhooks</a>
+    </nav>
+    <main class="content">
+      <div class="panel">
+        <div class="panel-head"><h1>Open tickets</h1><span class="spacer"></span><a class="btn" href="ticket-detail.html">New</a></div>
+        <form class="filters panel-body">
+          <div><label for="s">State</label><select id="s"><option>Any open state</option><option>New</option><option>In Progress</option><option>On Hold</option></select></div>
+          <div><label for="g">Assignment group</label><select id="g"><option>Any group</option><option>SOC L1</option><option>SOC L2</option><option>IT Ops</option></select></div>
+          <div><label for="q">Search</label><input id="q" type="search" placeholder="Number or text"></div>
+          <div><button class="primary" type="button">Apply</button></div>
+        </form>
+        <table class="list">
+          <thead><tr><th>Number</th><th>Short description</th><th>State</th><th>Priority</th><th>Assignment group</th><th>Assigned to</th><th>Updated</th></tr></thead>
+          <tbody>
+            <tr><td><a href="ticket-detail.html">TKT0001004</a></td><td>Possible data exfiltration from demo-db-01</td><td><span class="badge state-new">New</span></td><td class="prio-1">1 - Critical</td><td>SOC L2</td><td></td><td>24.11.2026, 15:41</td></tr>
+            <tr><td><a href="ticket-detail.html">TKT0001003</a></td><td>Phishing mail reported by user</td><td><span class="badge state-in_progress">In Progress</span></td><td class="prio-2">2 - High</td><td>SOC L1</td><td>analyst1</td><td>24.11.2026, 15:32</td></tr>
+            <tr><td><a href="ticket-detail.html">TKT0001002</a></td><td>Malware detected on demo-host-01</td><td><span class="badge state-on_hold">On Hold</span></td><td class="prio-3">3 - Moderate</td><td>SOC L1</td><td>analyst1</td><td>24.11.2026, 14:10</td></tr>
+            <tr><td><a href="ticket-detail.html">TKT0001001</a></td><td>VPN access not working</td><td><span class="badge state-new">New</span></td><td class="prio-4">4 - Low</td><td>IT Ops</td><td></td><td>24.11.2026, 09:05</td></tr>
+          </tbody>
+        </table>
+        <div class="pager"><span>1-4 of 4</span><button disabled>Previous</button><button disabled>Next</button></div>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

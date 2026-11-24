@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 60" width="120" height="60">
+  <rect x="4" y="10" width="112" height="40" rx="6" fill="#1f6feb"/>
+  <circle cx="4" cy="30" r="7" fill="#ffffff"/>
+  <circle cx="116" cy="30" r="7" fill="#ffffff"/>
+  <line x1="34" y1="14" x2="34" y2="46" stroke="#ffffff" stroke-width="2" stroke-dasharray="4 3"/>
+  <text x="76" y="37" font-family="Helvetica, Arial, sans-serif" font-size="18" font-weight="bold" fill="#ffffff" text-anchor="middle">TKT</text>
+</svg>

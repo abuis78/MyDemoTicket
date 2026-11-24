@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mockup - Custom fields - MyDemoTicket</title>
+  <!-- Static mockup: uses the real UI stylesheet; all data is placeholder data. -->
+  <link rel="stylesheet" href="../../ticket-system/mydemoticket/static/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="ticket-list.html">MyDemoTicket</a>
+    <form class="global-search"><input type="search" placeholder="Search tickets" aria-label="Search tickets"></form>
+    <div class="userbox"><span>Administrator (admin)</span><button type="button" class="link">Log out</button></div>
+  </header>
+  <div class="layout">
+    <nav class="sidebar">
+      <div class="nav-section">Tickets</div>
+      <a href="ticket-list.html">All open</a>
+      <a href="ticket-list.html">Assigned to me</a>
+      <a href="ticket-list.html">Unassigned</a>
+      <a href="ticket-list.html">All tickets</a>
+      <a href="ticket-detail.html">Create new</a>
+      <div class="nav-section">Administration</div>
+      <a href="admin-custom-fields.html">Users</a>
+      <a href="admin-custom-fields.html">Teams</a>
+      <a class="active" href="admin-custom-fields.html">Custom fields</a>
+      <a href="admin-custom-fields.html">Webhooks</a>
+    </nav>
+    <main class="content">
+      <div class="panel">
+        <div class="panel-head"><h1>Custom fields</h1></div>
+        <table class="list">
+          <thead><tr><th>Name</th><th>Label</th><th>Type</th><th>Choices</th><th>Required</th><th></th></tr></thead>
+          <tbody>
+            <tr><td class="mono">affected_host</td><td>Affected Host</td><td>string</td><td></td><td><input type="checkbox" aria-label="Required"></td><td><button class="danger">Delete</button></td></tr>
+            <tr><td class="mono">incident_type</td><td>Incident Type</td><td>choice</td><td>malware, phishing, data_exfiltration, other</td><td><input type="checkbox" aria-label="Required"></td><td><button class="danger">Delete</button></td></tr>
+            <tr><td class="mono">mitre_technique</td><td>MITRE ATT&amp;CK Technique</td><td>string</td><td></td><td><input type="checkbox" aria-label="Required"></td><td><button class="danger">Delete</button></td></tr>
+            <tr><td class="mono">risk_score</td><td>Risk Score</td><td>number</td><td></td><td><input type="checkbox" aria-label="Required"></td><td><button class="danger">Delete</button></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="panel">
+        <div class="panel-head"><h2>Add</h2></div>
+        <form class="panel-body form-grid">
+          <div><label class="req">Name</label><input placeholder="e.g. ticket_source"></div>
+          <div><label>Label</label><input></div>
+          <div><label>Type</label><select><option>string</option><option>number</option><option>boolean</option><option>choice</option><option>date</option></select></div>
+          <div><label>Choices</label><input placeholder="comma separated (choice only)"></div>
+          <div><label>Required</label><input type="checkbox"></div>
+          <div class="wide"><button class="primary" type="button">Create field</button></div>
+        </form>
+      </div>
+    </main>
+  </div>
+</body>
+</html>
