@@ -1,5 +1,5 @@
 Versuch: 2/5
-Punkte: 5/7
+Punkte: 7/7
 
 # Loop-Protokoll: Mehrfachfilter, Sammelbearbeitung, Kopplung ES + SOAR (MyDemoTicket)
 
@@ -38,8 +38,8 @@ Ausgelegte Spec (verbindlich für die Agenten):
 | 3 | Kopplungs-Assistent ES+SOAR: prüfen + einrichten (User/Token, Webhook, Label, App, Asset, Playbooks aktiv), idempotent, Token nie ausgegeben | Tests gegen Fake-SOAR | BESTANDEN (Versuch 1, Inspektor) |
 | 4 | UI DE/EN vollständig für alle neuen Texte | test_i18n grün + Code | BESTANDEN (Versuch 1, Inspektor) |
 | 5 | Alle Tests grün (ticket-system, soar-app, mcp-server, e2e, deploy) | Erfolgszeilen im Volloutput | BESTANDEN (Versuch 1, Inspektor) |
-| 6 | Live: Deploy 1.2.0; Assistent gegen Cloud-SOAR (Mandant audi) ohne Dubletten; Sammeländerung an 2 Tickets erscheint in SOAR und ES | Live-Belege im Protokoll | ausstehend → wird in Versuch 2 geprüft |
-| 7 | Kein Secret im Diff; Protokoll vollständig; jedes externe Werkzeug vermerkt | Protokoll + Diff | offen (Protokoll); kein Secret im Diff (Versuch 1) |
+| 6 | Live: Deploy 1.2.0; Assistent gegen Cloud-SOAR (Mandant audi) ohne Dubletten; Sammeländerung an 2 Tickets erscheint in SOAR und ES | Live-Belege im Protokoll | BESTANDEN (Versuch 2, Inspektor) |
+| 7 | Kein Secret im Diff; Protokoll vollständig; jedes externe Werkzeug vermerkt | Protokoll + Diff | BESTANDEN (Versuch 2, Inspektor); kein Secret im Diff |
 
 ## Antworten auf Vorab-Fragen
 - Keine Vorab-Fragen.
@@ -55,7 +55,7 @@ Ausgelegte Spec (verbindlich für die Agenten):
 - Versuch 1 · Fix-Agent Redirect/Bulk (de97f43, 5a19bff): effort medium.
 - Versuch 1 · Orchestrator (Merge, Probe, Deploy, Live): eigene Sitzung, Aufwand nicht verstellt (bleibt bei Andreas).
 - Versuch 2 · Protokoll-Agent (dieser Eintrag): model haiku, effort high – direkt auf high gestartet, weil Protokoll-Agenten auf low/medium in beiden Vorloops den Protokollpunkt verfehlten. Nicht herunterstufen.
-- Versuch 2 · Inspektor: model sonnet, effort medium – ausstehend.
+- Versuch 2 · Inspektor: model sonnet, effort medium – Urteil: 6 BESTANDEN, 7 BESTANDEN (nach Füllen der Platzhalter durch den Orchestrator).
 
 ## Annahmen
 1. Sammelbearbeitung nutzt denselben Code-Pfad wie PATCH je Ticket, damit Webhook → SOAR → ES je Ticket greift.
@@ -73,6 +73,8 @@ Ausgelegte Spec (verbindlich für die Agenten):
 | Versuch 1 | Orchestrator | Bash git merge (Worktree-Branch feature/bulk-filter-pairing-wizard) → 0703962 | lokal | Zusammenführen. Konflikt nur in CHANGELOG, vom Orchestrator aufgelöst |
 | Versuch 1 | Orchestrator | Bash python soar_live.py (read-only): GET /rest/system_settings/events, /rest/system_settings, /rest/container_options, /rest/label, /rest/playbook, /rest/app?_filter_appid, /rest/asset (mit Filtern), /rest/asset/38, /rest/app/200 | Cloud SOAR (Mandant audi) | Probe: events = 404, Labels in container_options → Fix f541410. Versuch 2: Statusprüfung. Nur lesend |
 | Versuch 1 + 2 | Inspektor | Bash curl (Health, Stichproben) | ticket.soc-games.com | Prüfungen der Inspektoren (lesend) |
+| Versuch 2 | Inspektor | Bash python3 soar_live.py soar (nur GET: playbook, artifact, action_run, app_run) | Cloud SOAR (Mandant audi) | Live-Belege prüfen (lesend) |
+| Versuch 2 | Orchestrator | git push, gh pr create/merge, git push --delete | GitHub abuis78/MyDemoTicket | Protokoll-Abschluss (Branch docs/loop-bulk-pairing-end) |
 | ~09:00 | Orchestrator | Bash aws sts get-caller-identity --profile janus-env2 | AWS (Account soc-games) | Anmeldung für den Deploy prüfen |
 | ~09:00 | Orchestrator | AWS SSM via deploy/aws/backup.sh | i-0d33324e98981cda8 | Backup vor Deploy. Ergebnis: „backup ok: /var/lib/mydemoticket.bak-20261125T080041Z“ |
 | ~09:00 | Orchestrator | Bash deploy/aws/deploy.sh (S3-Bundle 136941 Bytes bei 2ec9337, SSM-Parameter, EC2 describe) | AWS S3 / SSM / EC2 | Deploy von 2ec9337 |
@@ -130,14 +132,16 @@ Alle Schritte vom Orchestrator am 2026-11-25 ca. 09:00–09:10 CET, außer wo an
 - Fehler: Ein versehentlicher `import live110` hat das 1.1.0-Live-Skript gegen die Produktion ausgeführt: 17/17 passed. Dabei wurden loopcheck_admin_96f0e4 und loopcheck_user_96f0e4 angelegt und sofort deaktiviert. Nicht beabsichtigt; siehe „Braucht Andreas“, Punkt 2.
 
 ## Urteil Inspektor Versuch 2
-Ausstehend. Inspektor (sonnet, medium) prüft Punkt 6 und 7.
+Inspektor (sonnet, medium), nur lesend (curl, GET-Abfragen über soar_live.py auf Cloud SOAR):
 
 | # | Ergebnis | Nachweis |
 |---|---|---|
-| 6 | ausstehend | Live-Belege oben: Health 1.2.0; Pairing check/apply; Bulk 2 und 3; ES-Notizen über SOAR |
-| 7 | ausstehend | Protokoll + Diff |
+| 6 | BESTANDEN | Health {"status": "ok", "version": "1.2.0"}; Startseite lädt pairing.js (1), /static/pairing.js 200; nur ein es_mirror-Playbook aktiv (268, previous_versions enthält 262) + ticket_from_es 269; Artefakte 428/430 (Container 1859) und 429/431 (1860) je Ticket ticket.state_changed; update event success (App-Runs 1293/1295/1297); ES-Notizen TKT0001022/23 „geschlossen von admin (cancelled)“ in App-Runs 1301/1302 gelesen |
+| 7 | BESTANDEN | Diff b501600..HEAD ohne Secret (nur Test-Fixture); Protokoll vollständig im Vergleich zum Vorloop; Platzhalter vom Orchestrator gefüllt |
 
 ## Braucht Andreas
 1. UI im Browser ansehen: Ticketliste (Mehrfachfilter, Sammelbearbeitung) und Admin → Kopplung ES + SOAR.
 2. Test-Tickets TKT0001022 und TKT0001023 sind storniert und bleiben stehen. Zwei weitere deaktivierte Test-User (loopcheck_admin_96f0e4, loopcheck_user_96f0e4) bleiben ebenfalls stehen, dazu die Test-User aus dem Vorloop (loopcheck_*_6634c3). User-Löschen gibt es nicht. Empfehlung: so lassen.
 3. Lokale squash-gemergte Branches nicht gelöscht (`-d` verweigert, `-D` verboten). Empfehlung: Andreas löscht sie bei Gelegenheit selbst.
+
+LOOP-ENDE: BESTANDEN
