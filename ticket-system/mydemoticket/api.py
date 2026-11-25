@@ -258,6 +258,7 @@ class Api:
         data["theme"] = row["theme"]
         data["language"] = row["language"]
         data["permissions"] = sorted(p.permissions)
+        data["role_label"] = self._role_label(row["role"], row["tenant_id"])
         data["tenant"] = tenant_ref(ctx.tenant)
         if p.is_platform_admin:
             data["active_tenant"] = tenant_ref(ctx.tenant)
@@ -265,6 +266,14 @@ class Api:
         if p.via == "session":
             data["csrf_token"] = p.csrf_token
         return 200, data
+
+    def _role_label(self, role, tenant_id):
+        """Display label of a role; users without roles.manage cannot read /roles for custom labels."""
+        if role in BUILTIN_ROLE_INFO:
+            return BUILTIN_ROLE_INFO[role][0]
+        row = self.db.query_one("SELECT label FROM roles WHERE tenant_id = ? AND name = ?", (tenant_id, role)) \
+            if tenant_id is not None else None
+        return (row["label"] if row is not None else "") or role
 
     def patch_me(self, ctx):
         """PATCH /me: the caller changes their own profile."""

@@ -147,7 +147,10 @@
   function roleLabel(name) {
     if (I18N.has("role." + name)) return t("role." + name);
     var custom = session.roles.filter(function (r) { return r.name === name; })[0];
-    return custom && custom.label ? custom.label : name;
+    if (custom && custom.label) return custom.label;
+    // without roles.manage there is no /roles; /me carries the label of the own role
+    var me = session.me;
+    return me && me.role === name && me.role_label ? me.role_label : name;
   }
 
   // ----------------------------------------------------- theme, time, language

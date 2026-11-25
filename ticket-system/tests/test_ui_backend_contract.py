@@ -49,5 +49,24 @@ class FallbackPermissionsTest(unittest.TestCase):
             self.assertEqual(sorted(self.map[role]), sorted(perms), role)
 
 
+class AppJsContractTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.js = read("app.js")
+
+    def function_body(self, name):
+        start = self.js.index("function %s(" % name)
+        depth, i = 0, self.js.index("{", start)
+        for i in range(i, len(self.js)):
+            depth += {"{": 1, "}": -1}.get(self.js[i], 0)
+            if depth == 0:
+                return self.js[start:i + 1]
+        raise AssertionError(name)
+
+    def test_own_custom_role_label_comes_from_me(self):
+        # users with a custom role but without roles.manage get 403 on /roles; GET /me has role_label
+        self.assertIn("me.role_label", self.function_body("roleLabel"))
+
+
 if __name__ == "__main__":
     unittest.main()

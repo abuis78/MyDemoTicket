@@ -223,6 +223,19 @@ class AnalystEnforcementTest(ServerTestCase):
         self.assertEqual(selfsvc.post("/tickets", {"short_description": "x"}).status, 403)  # no tickets.create
         self.assertEqual(selfsvc.patch("/tickets/" + mine["number"], {"state": "cancelled"}).status, 403)
 
+    def test_me_carries_the_role_label(self):
+        # users without roles.manage cannot read /roles; the UI header shows /me.role_label
+        self.assertEqual(self.admin.post("/roles", {"name": "labelled", "label": "Triage Desk",
+                                                    "permissions": ["tickets.read_all"]}).status, 201)
+        self.assertEqual(self.admin.post("/users", {"username": "labeluser", "role": "labelled",
+                                                    "tenant": "soc-games"}).status, 201)
+        me = self.client_for("labeluser").get("/me").json
+        self.assertEqual((me["role"], me["role_label"]), ("labelled", "Triage Desk"))
+        self.assertEqual(self.client_for("labeluser").get("/roles").status, 403)
+        self.assertEqual(self.client_for("l1").get("/me").json["role_label"], "Analyst L1")
+        self.assertEqual(self.client_for("custom").get("/me").json["role_label"], "no_users")
+        self.assertEqual(self.admin.get("/me").json["role_label"], "Platform admin")
+
     def test_role_change_applies_immediately(self):
         self.admin.post("/users", {"username": "switcher", "role": "read_only", "tenant": "soc-games"})
         client = self.client_for("switcher")

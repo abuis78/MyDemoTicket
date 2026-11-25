@@ -255,12 +255,14 @@ curl -s $MDT/health
 curl -s -H "Authorization: Bearer $TOKEN" $MDT/me
 # {"username": "soar", "display_name": "...", "email": "...", "role": "integration", "tenant": {"slug": "soc-games",
 #  "name": "SOC Games"}, "active": true, "teams": [], "has_password": true, "created_at": "...",
-#  "timezone": "", "theme": "system", "language": "de", "permissions": ["reports.view", "tickets.close", ...]}
-#  (+ "csrf_token" for session auth)
+#  "timezone": "", "theme": "system", "language": "de", "permissions": ["reports.view", "tickets.close", ...],
+#  "role_label": "Integration"}  (+ "csrf_token" for session auth)
 ```
 
 `timezone` is an IANA name (`""` = use the browser's time zone), `theme` one of
-`system`, `light`, `dark`, `language` one of `de`, `en`.
+`system`, `light`, `dark`, `language` one of `de`, `en`. `role_label` is the display
+label of the caller's role (for a custom role its `label`), so users without
+`roles.manage` can show it without `GET /roles`.
 
 `tenant` is the tenant of the request (for normal users their own). For a
 `platform_admin`, `/me` additionally returns `active_tenant` (`{slug, name}`, same
