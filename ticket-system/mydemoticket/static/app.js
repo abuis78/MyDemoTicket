@@ -644,7 +644,7 @@
     var actions = h("div", { class: "actions" });
     (TRANSITIONS[tk.state] || []).forEach(function (target) {
       var allowed = (editable && (CLOSING_STATES.indexOf(target) < 0 || can("tickets.close"))) ||
-        (requester && target === "cancelled" && tk.caller === me.username);
+        (requester && target === "cancelled" && tk.caller === me.username && can("tickets.create"));
       if (!allowed) return;
       actions.appendChild(h("button", {
         class: target === "resolved" ? "primary" : target === "cancelled" ? "danger" : null,
@@ -780,7 +780,8 @@
     var notes = ofType("work_note"), comments = ofType("comment"), summaries = ofType("summary");
     var audits = ofType("audit");
     var canNote = canComment && can("tickets.work_note");
-    var canPublic = canComment && (requester || can("tickets.comment"));
+    // self-service users need tickets.comment too (custom roles without tickets.read_all)
+    var canPublic = canComment && can("tickets.comment");
 
     var defs = [];
     if (!requester) {

@@ -81,6 +81,14 @@ class AppJsContractTest(unittest.TestCase):
         self.assertIn('path === "/new") return canCreate()', allowed)
         self.assertIn('path === "/admin/audit") return isAdmin()', allowed)
 
+    def test_self_service_actions_need_the_same_permissions_as_the_server(self):
+        # api.py: self-service cancel needs tickets.create, self-service comments need tickets.comment
+        # (a custom role with only tickets.comment must not see a cancel button that ends in 403)
+        detail = self.function_body("drawDetail")
+        self.assertIn('target === "cancelled" && tk.caller === me.username && can("tickets.create")', detail)
+        journal = self.function_body("drawJournal")
+        self.assertIn('var canPublic = canComment && can("tickets.comment");', journal)
+
 
 if __name__ == "__main__":
     unittest.main()
