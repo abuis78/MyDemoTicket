@@ -109,6 +109,67 @@ that tenant's data.
 | `agent` | reads all tickets of the tenant; changes/comments only tickets of own team, assigned to self, or fully unassigned (else `403`); may read `/users` and `/teams` |
 | `integration` | like agent, but may change all tickets of the tenant (for SOAR) |
 | `requester` | creates/reads/comments own tickets (`caller`); may only set `state: cancelled` on own tickets; never sees work notes; may read but not write summaries; `403` on `/users`, `/teams`, admin endpoints |
+| `analyst_l1` | reads all tickets; changes/comments/work notes like `agent` (own team, assigned to self, unassigned); **cannot** resolve, close or cancel; no reports |
+| `analyst_l2` | reads and changes all tickets of the tenant, may resolve, close and cancel; no reports |
+| `soc_lead` | `analyst_l2` plus reports |
+| `read_only` | reads all tickets and journals (incl. work notes); no changes, no comments, cannot create tickets |
+
+The first five roles behave exactly as before 1.1.0; the analyst roles and custom
+roles have no administrative rights.
+
+### Permissions
+
+Since 1.1.0 every check is a permission check. `GET /me` returns the caller's
+`permissions`.
+
+| Permission | Grantable to custom roles | Meaning |
+|---|---|---|
+| `tickets.read_all` | yes | see all tickets of the tenant, `/users`, `/teams`. **Without it** the user is *self-service* (requester rules): sees only tickets with `caller` = self, never work notes, may create tickets only with `short_description`, `description`, `priority`, `category`, `custom_fields`, may only add `comment`s and cancel own tickets (needs `tickets.create`) |
+| `tickets.create` | yes | `POST /tickets` |
+| `tickets.update_own` | yes | change/comment tickets that are unassigned, assigned to self or to an own team |
+| `tickets.update_all` | yes | change/comment any ticket of the tenant |
+| `tickets.comment` | yes | journal type `comment` (on tickets the user may change) |
+| `tickets.work_note` | yes | journal types `work_note` and `summary` |
+| `tickets.close` | yes | transitions to `resolved`, `closed`, `cancelled` |
+| `reports.view` | yes | `GET /reports/summary` |
+| `users.manage` | no | `POST/PATCH /users`, tokens |
+| `roles.manage` | no | `/permissions`, `/roles` |
+| `teams.manage` | no | `POST /teams`, team members |
+| `fields.manage` | no | `POST/PATCH/DELETE /custom-fields` |
+| `webhooks.manage` | no | `/webhooks` |
+| `tenants.manage` | no | `/tenants` |
+| `splunk.manage` | no | `/settings/splunk` |
+
+Built-in role → permissions:
+
+| Role | Permissions |
+|---|---|
+| `platform_admin` | all |
+| `admin` | all except `tenants.manage`, `splunk.manage` |
+| `agent` | `tickets.read_all`, `tickets.create`, `tickets.update_own`, `tickets.comment`, `tickets.work_note`, `tickets.close`, `reports.view` |
+| `integration` | `tickets.read_all`, `tickets.create`, `tickets.update_all`, `tickets.comment`, `tickets.work_note`, `tickets.close`, `reports.view` |
+| `requester` | `tickets.create`, `tickets.comment` (self-service) |
+| `analyst_l1` | `tickets.read_all`, `tickets.create`, `tickets.update_own`, `tickets.comment`, `tickets.work_note` |
+| `analyst_l2` | `tickets.read_all`, `tickets.create`, `tickets.update_all`, `tickets.comment`, `tickets.work_note`, `tickets.close` |
+| `soc_lead` | `analyst_l2` + `reports.view` |
+| `read_only` | `tickets.read_all` |
+
+`GET /audit/status` stays bound to the roles `admin` and `platform_admin`; tenant
+switching (`POST /auth/tenant`, tenant header) to `platform_admin`.
+
+### Roles API (admin, platform_admin: `roles.manage`)
+
+| Endpoint | Body / result |
+|---|---|
+| `GET /permissions` | `[{"name", "grantable"}]` |
+| `GET /roles` | `[{"name", "label", "description", "builtin", "permissions", "users"}]` – built-in roles plus the custom roles of the request's tenant; `platform_admin` only for platform admins; `users` = number of users with that role in the tenant |
+| `POST /roles` | `{"name" ([a-z][a-z0-9_]{1,31}, not a built-in name), "label"?, "description"?, "permissions"}` → `201`; unknown or non-grantable permission → `422`; name exists in the tenant → `409` |
+| `PATCH /roles/{name}` | any of `label`, `description`, `permissions` → `200`; built-in → `422 built-in roles are read-only`; role of another tenant → `404` |
+| `DELETE /roles/{name}` | `204`; built-in → `422`; still assigned to users → `409` |
+
+Custom roles belong to one tenant; `POST/PATCH /users` accept a built-in role or a
+custom role of the target user's tenant (`422` otherwise). A role change applies to
+the user's next request. Audit actions: `role.create`, `role.update`, `role.delete`.
 
 ## Tenants (multi-tenancy)
 
@@ -185,7 +246,7 @@ A new login starts in `soc-games` again.
 
 ```bash
 curl -s $MDT/health
-# {"status": "ok", "version": "1.0.0"}
+# {"status": "ok", "version": "1.1.0"}
 ```
 
 ### `GET /me`
@@ -193,13 +254,37 @@ curl -s $MDT/health
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" $MDT/me
 # {"username": "soar", "display_name": "...", "email": "...", "role": "integration", "tenant": {"slug": "soc-games",
-#  "name": "SOC Games"}, "active": true, "teams": [], "has_password": true, "created_at": "..."}
+#  "name": "SOC Games"}, "active": true, "teams": [], "has_password": true, "created_at": "...",
+#  "timezone": "", "theme": "system", "language": "de", "permissions": ["reports.view", "tickets.close", ...]}
 #  (+ "csrf_token" for session auth)
 ```
+
+`timezone` is an IANA name (`""` = use the browser's time zone), `theme` one of
+`system`, `light`, `dark`, `language` one of `de`, `en`.
 
 `tenant` is the tenant of the request (for normal users their own). For a
 `platform_admin`, `/me` additionally returns `active_tenant` (`{slug, name}`, same
 as `tenant`) and `tenants` (all tenant objects).
+
+### `PATCH /me` – own profile (every user)
+
+Body: any of `display_name` (non-empty, max 200), `email` (e-mail address or `""`),
+`timezone` (IANA name loadable by `zoneinfo`, or `""`), `theme`, `language`.
+Unknown field or invalid value → `422`. Returns the `/me` object. Audit `profile.update`.
+
+```bash
+curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"display_name": "Jane Doe", "timezone": "Europe/Berlin", "theme": "dark", "language": "en"}' $MDT/me
+```
+
+### `POST /me/password` – own password
+
+Body `{"current_password", "new_password"}` (min 8 characters) → `200 {"ok": true}`.
+Wrong current password → `403` (audit `profile.password_change`, outcome `failure`);
+too short → `422`; user without password (token-only) → `422 no password set`.
+The **current session stays valid**, all other sessions of the user are ended. The
+same applies when an admin sets the own password via `PATCH /users/{self}`; setting
+another user's password ends all of that user's sessions.
 
 ### `POST /auth/login` / `POST /auth/logout` (web UI)
 
@@ -379,9 +464,9 @@ User object: `{"username", "display_name", "email", "role", "tenant", "active", 
 
 | Endpoint | Body / result |
 |---|---|
-| `GET /users` | users of the request's tenant (also allowed for agent/integration); a platform admin also sees the platform admins |
-| `POST /users` | `{"username", "role", "tenant"?, "display_name"?, "email"?, "password"? (min 8), "teams"?, "active"?}` → `201` |
-| `PATCH /users/{username}` | any of `display_name`, `email`, `role`, `active`, `password`, `teams` (replaces) → `200`; demoting/deactivating the last active platform admin → `409`; changing a role to or from `platform_admin` → `422` |
+| `GET /users` | users of the request's tenant (every role with `tickets.read_all`); a platform admin also sees the platform admins |
+| `POST /users` | `{"username", "role" (built-in or custom role of the target tenant), "tenant"?, "display_name"?, "email"?, "password"? (min 8), "teams"?, "active"?}` → `201` |
+| `PATCH /users/{username}` | any of `display_name`, `email`, `role`, `active`, `password`, `teams` (replaces) → `200`; demoting/deactivating the last active platform admin → `409`; changing a role to or from `platform_admin` → `422`; a new `password` ends the user's sessions (for the own account all except the current one) |
 
 Rules for `POST /users`:
 
@@ -402,7 +487,7 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/
 
 ## Reports
 
-### `GET /reports/summary?since=<ISO>` (admin, agent, integration, platform_admin in the request's tenant)
+### `GET /reports/summary?since=<ISO>` (`reports.view`: admin, agent, integration, soc_lead, platform_admin in the request's tenant)
 
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" "$MDT/reports/summary?since=2026-11-01T00:00:00Z"
@@ -438,6 +523,29 @@ curl -s -H "Authorization: Bearer $TOKEN" $MDT/audit/status
 # {"hec_enabled": true, "queued": 0, "sent": 120, "failed": 0, "dropped": 0, "local_written": 120,
 #  "last_error": null, "last_success_at": "..."}
 ```
+
+### Splunk connection (platform_admin: `splunk.manage`)
+
+The HEC connection can be set in the UI (Audit / Splunk) instead of the
+`MYDEMOTICKET_HEC_*` environment variables. A stored connection wins over the
+environment; changes apply immediately to the running audit logger.
+
+| Endpoint | Body / result |
+|---|---|
+| `GET /settings/splunk` | `{"hec_url", "index", "verify_tls", "enabled", "token_set", "source"}`; `source` = `settings` (stored), `env` (`MYDEMOTICKET_HEC_URL` set) or `none`. The token is **never** returned |
+| `PUT /settings/splunk` | `{"hec_url", "index", "verify_tls", "enabled", "token"?}` → `200` (GET shape); a missing field keeps its current value; `token` omitted = keep, `""` = clear; `enabled: true` needs URL and token (`422`); audit `settings.splunk_update` (`credential`: `kept`/`replaced`/`cleared`, never the token) |
+| `POST /settings/splunk/test` | → `200 {"ok": bool, "message": str}`; sends **one** event (`action: "splunk.test"`) synchronously to the configured HEC (also while `enabled` is false) and reports the result; audit `settings.splunk_test` |
+
+```bash
+curl -s -X PUT -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"hec_url": "https://splunk.example:8088", "index": "mydemoticket", "verify_tls": true,
+       "enabled": true, "token": "'"$HEC_TOKEN"'"}' $MDT/settings/splunk
+curl -s -X POST -H "Authorization: Bearer $TOKEN" $MDT/settings/splunk/test
+# {"ok": true, "message": "test event accepted by Splunk HEC (splunk.example:8088)"}
+```
+
+The token is stored in the `settings` table of the database (data directory, mode
+0700), because it is needed to send events.
 
 ## Teams (admin)
 

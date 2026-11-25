@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.1.0 – 2026-11-25
+
+| Component | Version |
+|---|---|
+| Ticket system (`ticket-system/mydemoticket`) | 1.1.0 |
+| REST API | v1 |
+| Database schema | 4 |
+
+### Ticket system
+
+- Own profile: `GET /me` returns `timezone`, `theme`, `language` and `permissions`;
+  `PATCH /me` changes display name, e-mail, time zone (IANA), theme and language;
+  `POST /me/password` changes the own password after checking the current one.
+- Fix: changing the own password (`POST /me/password` or `PATCH /users/<self>`)
+  keeps the current session and ends only the other sessions; before, the admin was
+  logged out and creating a user failed afterwards.
+- Permission model behind all role checks; the five existing roles keep their exact
+  behaviour. New built-in analyst roles `analyst_l1`, `analyst_l2`, `soc_lead`,
+  `read_only`.
+- Role management: `GET /permissions`, `GET/POST /roles`, `PATCH/DELETE /roles/<name>`;
+  custom roles per tenant, only analyst permissions grantable (server-side enforced).
+- Splunk HEC connection configurable at runtime: `GET/PUT /settings/splunk`,
+  `POST /settings/splunk/test` (platform admin); stored settings win over
+  `MYDEMOTICKET_HEC_*`; the token is write-only and never logged.
+- Schema migration v4 (additive, backup `*.pre-v4.bak`): user profile columns,
+  tables `roles` and `settings`.
+
 ## 1.0.0 – 2026-11-24
 
 First complete release. Component versions:
