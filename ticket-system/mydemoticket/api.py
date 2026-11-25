@@ -18,6 +18,7 @@ from .auth import (
     hash_password,
     hash_token,
     new_token,
+    require_permission,
     require_role,
     set_session_tenant,
     user_teams,
@@ -51,6 +52,7 @@ TRANSITIONS = {
 }
 PRIORITIES = {1: "critical", 2: "high", 3: "moderate", 4: "low"}
 OPEN_STATES = ("new", "in_progress", "on_hold")
+CLOSING_STATES = ("resolved", "closed", "cancelled")  # transitions that need tickets.close
 UNASSIGNED_TEAM = "(none)"
 FIELD_TYPES = ("string", "number", "boolean", "choice", "date")
 # journal entry types writable via POST /tickets/{number}/comments; summary = AI or resolution
@@ -202,6 +204,14 @@ class Api:
     def _require_admin(self, ctx):
         require_role(ctx.principal, *ADMIN_ROLES)
 
+    @staticmethod
+    def _require_write(principal, ticket):
+        """Field changes, comments and work notes of non-self-service users."""
+        if not (principal.has("tickets.update_all") or principal.has("tickets.update_own")):
+            raise _forbidden("forbidden for role '%s' (needs tickets.update_own)" % principal.role)
+        if not can_modify_ticket(principal, ticket):
+            raise _forbidden("ticket is assigned to another team or user")
+
     # =====================================================================
     # misc
     # =====================================================================
@@ -321,15 +331,15 @@ class Api:
         return values
 
     def list_tenants(self, ctx):
-        require_role(ctx.principal, "platform_admin")
+        require_permission(ctx.principal, "tenants.manage")
         return 200, [tenant_dict(r) for r in self.db.query("SELECT * FROM tenants ORDER BY slug")]
 
     def get_tenant(self, ctx, slug):
-        require_role(ctx.principal, "platform_admin")
+        require_permission(ctx.principal, "tenants.manage")
         return 200, tenant_dict(self._load_tenant(slug))
 
     def create_tenant(self, ctx):
-        require_role(ctx.principal, "platform_admin")
+        require_permission(ctx.principal, "tenants.manage")
         body = _require_obj(ctx.body)
         unknown = set(body) - {"slug", "name", "active", "soar_url", "splunk_index", "seed"}
         if unknown:
@@ -360,7 +370,7 @@ class Api:
         return 201, tenant_dict(row)
 
     def patch_tenant(self, ctx, slug):
-        require_role(ctx.principal, "platform_admin")
+        require_permission(ctx.principal, "tenants.manage")
         body = _require_obj(ctx.body)
         row = self._load_tenant(slug)
         for key in body:
@@ -394,7 +404,7 @@ class Api:
     # reports
     # =====================================================================
     def reports_summary(self, ctx):
-        require_role(ctx.principal, "platform_admin", "admin", "agent", "integration")  # read-only
+        require_permission(ctx.principal, "reports.view")
         tid = self._tid(ctx)
         where, params = "tenant_id = ?", [tid]
         since_raw = ctx.query.get("since")
@@ -580,7 +590,7 @@ class Api:
     def list_tickets(self, ctx):
         p, q = ctx.principal, ctx.query
         where, params = ["tenant_id = ?"], [self._tid(ctx)]
-        if p.role == "requester":
+        if p.self_service:
             where.append("caller = ?")
             params.append(p.username)
         if q.get("state"):
@@ -645,12 +655,13 @@ class Api:
     def create_ticket(self, ctx):
         p, body = ctx.principal, _require_obj(ctx.body)
         tid = self._tid(ctx)
+        require_permission(p, "tickets.create")
         for key in body:
             if key in TICKET_READONLY:
                 raise ApiError(422, "'%s' is read-only" % key)
             if key not in TICKET_WRITABLE:
                 raise ApiError(422, "unknown field '%s'" % key)
-        if p.role == "requester":
+        if p.self_service:
             extra = [k for k in body if k not in REQUESTER_CREATE_FIELDS]
             if extra:
                 raise _forbidden("requesters may not set: %s" % ", ".join(sorted(extra)))
@@ -665,7 +676,7 @@ class Api:
         category = _text(body.get("category"), "category", max_len=100)
         group = self._check_group(body.get("assignment_group"), tid)
         assignee = self._check_user(body.get("assigned_to"), "assigned_to", tid)
-        caller = p.username if p.role == "requester" else (
+        caller = p.username if p.self_service else (
             self._check_user(body.get("caller"), "caller", tid) or p.username
         )
         custom = self._validate_custom_values(tid, body.get("custom_fields") or {}, creating=True)
@@ -709,11 +720,12 @@ class Api:
                 raise ApiError(422, "'%s' is read-only" % key)
             if key not in TICKET_WRITABLE:
                 raise ApiError(422, "unknown field '%s'" % key)
-        if p.role == "requester":
+        if p.self_service:
             if set(body) - {"state"} or body.get("state") != "cancelled":
                 raise _forbidden("requesters may only cancel their own tickets")
-        elif not can_modify_ticket(p, row):
-            raise _forbidden("ticket is assigned to another team or user")
+            require_permission(p, "tickets.create")
+        else:
+            self._require_write(p, row)
 
         current = self._ticket_dict(row)
         new = dict(current)
@@ -744,6 +756,8 @@ class Api:
             if target not in STATES:
                 raise ApiError(422, "unknown state '%s'" % target)
             if target != current["state"]:
+                if target in CLOSING_STATES and not p.self_service:
+                    require_permission(p, "tickets.close")
                 if target not in TRANSITIONS[current["state"]]:
                     raise ApiError(
                         409, "transition %s -> %s is not allowed" % (current["state"], target)
@@ -843,7 +857,7 @@ class Api:
     def journal(self, ctx, number):
         row = self._readable_ticket(ctx, number)
         sql = "SELECT * FROM journal WHERE ticket_id = ? AND tenant_id = ?"
-        if ctx.principal.role == "requester":
+        if ctx.principal.self_service:
             sql += " AND type != 'work_note'"
         rows = self.db.query(sql + " ORDER BY id ASC", (row["id"], self._tid(ctx)))
         return 200, [self._journal_dict(r) for r in rows]
@@ -858,11 +872,13 @@ class Api:
         unknown = set(body) - {"body", "type", "author"}
         if unknown:
             raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])
-        if p.role == "requester":
+        if p.self_service:
             if kind != "comment":
                 raise _forbidden("requesters may only add comments")
-        elif not can_modify_ticket(p, row):
-            raise _forbidden("ticket is assigned to another team or user")
+            require_permission(p, "tickets.comment")
+        else:
+            require_permission(p, "tickets.comment" if kind == "comment" else "tickets.work_note")
+            self._require_write(p, row)
         text = _text(body.get("body"), "body", required=True)
         author = _author(body.get("author"))
         now = utcnow()
@@ -915,7 +931,7 @@ class Api:
         return value
 
     def create_custom_field(self, ctx):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "fields.manage")
         tid = self._tid(ctx)
         body = _require_obj(ctx.body)
         unknown = set(body) - {"name", "label", "type", "choices", "required"}
@@ -942,7 +958,7 @@ class Api:
         return 201, self._field_defs(tid)[name]
 
     def patch_custom_field(self, ctx, name):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "fields.manage")
         tid = self._tid(ctx)
         body = _require_obj(ctx.body)
         current = self._field_defs(tid).get(name)
@@ -968,7 +984,7 @@ class Api:
         return 200, updated
 
     def delete_custom_field(self, ctx, name):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "fields.manage")
         cur = self.db.execute("DELETE FROM custom_field_defs WHERE name = ? AND tenant_id = ?",
                               (name, self._tid(ctx)))
         if cur.rowcount == 0:
@@ -1006,7 +1022,7 @@ class Api:
         return row
 
     def list_users(self, ctx):
-        require_role(ctx.principal, "platform_admin", "admin", "agent", "integration")
+        require_permission(ctx.principal, "tickets.read_all")  # requesters (self-service) do not
         if ctx.principal.is_platform_admin:
             rows = self.db.query("SELECT * FROM users WHERE tenant_id = ? OR tenant_id IS NULL ORDER BY username",
                                  (self._tid(ctx),))
@@ -1059,7 +1075,7 @@ class Api:
         return self._tid(ctx)
 
     def create_user(self, ctx):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "users.manage")
         body = _require_obj(ctx.body)
         unknown = set(body) - {"username", "display_name", "email", "role", "password", "teams", "active", "tenant"}
         if unknown:
@@ -1100,7 +1116,7 @@ class Api:
         )["n"]
 
     def patch_user(self, ctx, username):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "users.manage")
         p = ctx.principal
         body = _require_obj(ctx.body)
         row = self._load_user(ctx, username)
@@ -1157,13 +1173,13 @@ class Api:
         }
 
     def list_tokens(self, ctx, username):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "users.manage")
         row = self._load_user(ctx, username)
         rows = self.db.query("SELECT * FROM api_tokens WHERE user_id = ? ORDER BY id", (row["id"],))
         return 200, [self._token_dict(r) for r in rows]
 
     def create_token(self, ctx, username):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "users.manage")
         body = _require_obj(ctx.body)
         row = self._load_user(ctx, username)
         name = _text(body.get("name"), "name", max_len=100) or "api"
@@ -1180,7 +1196,7 @@ class Api:
         return 201, data
 
     def delete_token(self, ctx, username, token_id):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "users.manage")
         row = self._load_user(ctx, username)
         existing = self.db.query_one("SELECT name FROM api_tokens WHERE id = ? AND user_id = ?",
                                      (int(token_id), row["id"]))
@@ -1215,12 +1231,12 @@ class Api:
         return row
 
     def list_teams(self, ctx):
-        require_role(ctx.principal, "platform_admin", "admin", "agent", "integration")
+        require_permission(ctx.principal, "tickets.read_all")  # requesters (self-service) do not
         rows = self.db.query("SELECT * FROM teams WHERE tenant_id = ? ORDER BY name", (self._tid(ctx),))
         return 200, [self._team_dict(r) for r in rows]
 
     def create_team(self, ctx):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "teams.manage")
         tid = self._tid(ctx)
         body = _require_obj(ctx.body)
         unknown = set(body) - {"name", "description", "members"}
@@ -1256,7 +1272,7 @@ class Api:
         return row
 
     def add_team_member(self, ctx, name):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "teams.manage")
         body = _require_obj(ctx.body)
         team = self._load_team(ctx, name)
         user = self._load_user_422(ctx, body.get("username"))
@@ -1268,7 +1284,7 @@ class Api:
         return 200, self._team_dict(team)
 
     def remove_team_member(self, ctx, name, username):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "teams.manage")
         team = self._load_team(ctx, name)
         user = self._load_user(ctx, username)
         self.db.execute("DELETE FROM team_members WHERE team_id = ? AND user_id = ?", (team["id"], user["id"]))
@@ -1302,12 +1318,12 @@ class Api:
         return row
 
     def list_webhooks(self, ctx):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "webhooks.manage")
         rows = self.db.query("SELECT * FROM webhooks WHERE tenant_id = ? ORDER BY id", (self._tid(ctx),))
         return 200, [self._webhook_dict(r) for r in rows]
 
     def create_webhook(self, ctx):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "webhooks.manage")
         body = _require_obj(ctx.body)
         unknown = set(body) - {"name", "type", "url", "secret", "events", "active", "soar_label", "verify_tls"}
         if unknown:
@@ -1341,7 +1357,7 @@ class Api:
         return 201, hook
 
     def delete_webhook(self, ctx, hook_id):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "webhooks.manage")
         hook = self._load_webhook(ctx, hook_id)
         self.db.execute("DELETE FROM webhooks WHERE id = ?", (hook["id"],))
         self._log(ctx, "webhook.delete", object_type="webhook", object_id=str(hook["id"]),
@@ -1349,7 +1365,7 @@ class Api:
         return 204, None
 
     def webhook_deliveries(self, ctx, hook_id):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "webhooks.manage")
         hook = self._load_webhook(ctx, hook_id)
         return 200, self.dispatcher.deliveries(hook["id"])
 
