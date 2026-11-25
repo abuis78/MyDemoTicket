@@ -64,6 +64,8 @@ PRIORITIES = {1: "critical", 2: "high", 3: "moderate", 4: "low"}
 OPEN_STATES = ("new", "in_progress", "on_hold")
 CLOSING_STATES = ("resolved", "closed", "cancelled")  # transitions that need tickets.close
 UNASSIGNED_TEAM = "(none)"
+# list filter values meaning "not set" (assigned_to=-, assignment_group=null, ...)
+UNASSIGNED_TOKENS = ("-", "null")
 FIELD_TYPES = ("string", "number", "boolean", "choice", "date")
 # journal entry types writable via POST /tickets/{number}/comments; summary = AI or resolution
 # summary, visible like a comment, but only agents, admins and integrations may write it
@@ -87,6 +89,8 @@ PROFILE_FIELDS = ("display_name", "email", "timezone", "theme", "language")
 EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
 MAX_TEXT = 100_000
 MAX_LIMIT = 500
+MAX_BULK = 200
+BULK_FIELDS = ("state", "priority", "assignment_group", "assigned_to", "close_notes")
 
 _DUMMY_HASH = hash_password("dummy-password-for-timing", iterations=1000)
 
@@ -764,29 +768,66 @@ class Api:
             raise ApiError(422, "unknown user '%s' for '%s'" % (value, field))
         return value
 
+    @staticmethod
+    def _filter_values(ctx, field, exact=None, null_tokens=()):
+        """All values of a list filter: comma-separated and/or repeated (?f=a,b&f=c).
+
+        Returns a de-duplicated list; ``None`` stands for "no value" (one of
+        ``null_tokens`` or an empty parameter when ``null_tokens`` is given).
+        ``exact(raw)`` may claim a whole raw value (e.g. a team name with a comma).
+        """
+        raw = (getattr(ctx, "query_all", None) or {}).get(field)
+        if not raw:
+            raw = [ctx.query[field]] if field in ctx.query else []
+        values = []
+        for item in raw:
+            if exact is not None and item and exact(item):
+                parts = [item]
+            elif item.strip() == "":
+                parts = [None] if null_tokens else []
+            else:
+                parts = [x.strip() for x in item.split(",") if x.strip()]
+            for part in parts:
+                value = None if part is None or part in null_tokens else part
+                if value not in values:
+                    values.append(value)
+        return values
+
     def list_tickets(self, ctx):
         p, q = ctx.principal, ctx.query
         where, params = ["tenant_id = ?"], [self._tid(ctx)]
         if p.self_service:
             where.append("caller = ?")
             params.append(p.username)
-        if q.get("state"):
-            states = [s.strip() for s in q["state"].split(",") if s.strip()]
-            for s in states:
-                if s not in STATES:
-                    raise ApiError(422, "unknown state '%s'" % s)
+        states = [s for s in self._filter_values(ctx, "state") if s is not None]
+        for s in states:
+            if s not in STATES:
+                raise ApiError(422, "unknown state '%s'" % s)
+        if states:
             where.append("state IN (%s)" % ",".join("?" * len(states)))
             params.extend(states)
+        priorities = [_priority(v) for v in self._filter_values(ctx, "priority") if v is not None]
+        if priorities:
+            where.append("priority IN (%s)" % ",".join("?" * len(priorities)))
+            params.extend(priorities)
         for field in ("assignment_group", "assigned_to", "caller"):
-            if field in q:
-                if q[field] in ("", "null"):
-                    where.append("%s IS NULL" % field)
-                else:
-                    where.append("%s = ?" % field)
-                    params.append(q[field])
-        if q.get("priority"):
-            where.append("priority = ?")
-            params.append(_priority(q["priority"]))
+            if field not in q:
+                continue
+            exact = None
+            if field == "assignment_group":  # team names may contain commas
+                exact = lambda v: bool(self.db.query_one(  # noqa: E731
+                    "SELECT 1 FROM teams WHERE name = ? AND tenant_id = ?", (v, self._tid(ctx))))
+            values = self._filter_values(ctx, field, exact=exact, null_tokens=UNASSIGNED_TOKENS)
+            if not values:
+                continue
+            named = [v for v in values if v is not None]
+            parts = []
+            if named:
+                parts.append("%s IN (%s)" % (field, ",".join("?" * len(named))))
+                params.extend(named)
+            if None in values:
+                parts.append("%s IS NULL" % field)
+            where.append("(" + " OR ".join(parts) + ")")
         if q.get("updated_since"):
             since = parse_iso(q["updated_since"])
             if since is None:
@@ -889,7 +930,16 @@ class Api:
         )
 
     def patch_ticket(self, ctx, number):
-        p, body = ctx.principal, _require_obj(ctx.body)
+        ticket, _changes = self._apply_patch(ctx, number, _require_obj(ctx.body))
+        return 200, ticket
+
+    def _apply_patch(self, ctx, number, body):
+        """PATCH /tickets/<n> logic, shared with POST /tickets/bulk: returns (ticket, changes).
+
+        Permissions, state transitions, journal, audit and the webhook event are all
+        handled here, so a bulk change behaves exactly like one PATCH per ticket.
+        """
+        p = ctx.principal
         tid = self._tid(ctx)
         row = self._readable_ticket(ctx, number)
         for key in body:
@@ -949,7 +999,7 @@ class Api:
 
         changes = self._diff(current, new)
         if not changes:
-            return 200, current
+            return current, {}
         with self.db.transaction():
             self.db.execute(
                 "UPDATE tickets SET short_description = ?, description = ?, state = ?, priority = ?, "
@@ -974,7 +1024,52 @@ class Api:
                       details={"changed": sorted(changes), "changes": changes})
         self.dispatcher.emit(event, ticket, p.username, ctx.source, changes=changes, tenant=ctx.tenant,
                              request_id=ctx.request_id)
-        return 200, ticket
+        return ticket, changes
+
+    def bulk_update_tickets(self, ctx):
+        """POST /tickets/bulk: the same change for up to MAX_BULK tickets, one PATCH per ticket.
+
+        Each ticket is checked and changed on its own (permissions, transitions, close notes,
+        journal, audit, one webhook event); a failing ticket does not stop the others.
+        """
+        body = _require_obj(ctx.body)
+        unknown = set(body) - {"numbers", "changes"}
+        if unknown:
+            raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])
+        numbers = body.get("numbers")
+        if not isinstance(numbers, list) or not numbers or not all(
+                isinstance(n, str) and n.strip() for n in numbers):
+            raise ApiError(422, "'numbers' must be a non-empty list of ticket numbers")
+        numbers = list(dict.fromkeys(n.strip() for n in numbers))
+        if len(numbers) > MAX_BULK:
+            raise ApiError(422, "at most %d tickets per bulk request" % MAX_BULK)
+        changes = body.get("changes")
+        if not isinstance(changes, dict) or not changes:
+            raise ApiError(422, "'changes' must be a non-empty object")
+        bad = sorted(set(changes) - set(BULK_FIELDS))
+        if bad:
+            raise ApiError(422, "field '%s' cannot be changed in bulk (allowed: %s)"
+                           % (bad[0], ", ".join(BULK_FIELDS)))
+        results, failed, changed = [], [], 0
+        for number in numbers:
+            try:
+                ticket, diff = self._apply_patch(ctx, number, dict(changes))
+            except (ApiError, AuthError) as exc:
+                results.append({"number": number, "ok": False, "status": exc.status, "error": exc.message})
+                failed.append({"number": number, "status": exc.status})
+                if exc.status in (401, 403):  # as a single PATCH would log it
+                    self._log(ctx, "access.denied", outcome="denied", object_type="ticket", object_id=number,
+                              details={"method": "PATCH", "path": "/api/v1/tickets/%s" % number[:64],
+                                       "status": exc.status, "reason": exc.message, "bulk": True})
+                continue
+            changed += 1 if diff else 0
+            results.append({"number": ticket["number"], "ok": True, "status": 200, "changed": bool(diff)})
+        ok = len(numbers) - len(failed)
+        self._log(ctx, "ticket.bulk_update", outcome="success" if ok else "failure",
+                  object_type="ticket", object_id=None,
+                  details={"count": len(numbers), "ok": ok, "failed": len(failed), "changed": changed,
+                           "fields": sorted(changes), "numbers": numbers, "failures": failed})
+        return 200, {"results": results}
 
     @staticmethod
     def _diff(old, new):
