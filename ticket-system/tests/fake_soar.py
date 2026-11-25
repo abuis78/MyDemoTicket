@@ -1,7 +1,9 @@
 """In-process fake of the Splunk SOAR REST endpoints used by the pairing wizard (127.0.0.1 only).
 
 Models just enough behaviour to make the wizard's idempotency observable: apps by appid/version,
-assets by name, labels, playbooks by name with draft mode when the coa metadata is missing.
+assets by name (GET masks api_token and returns product_name null, as SOAR 8.x does), labels
+(listed by GET /rest/container_options; GET /rest/system_settings/events answers 404 as on SOAR 8.x),
+playbooks by name with draft mode when the coa metadata is missing.
 ``fail[(method, path_prefix)] = (status, message)`` injects errors; ``requests`` records every call.
 """
 
@@ -23,6 +25,7 @@ class FakeSoar:
         self.lock = threading.Lock()
         self.requests = []
         self.fail = {}
+        self.bool_as_text = False   # True: asset GET returns booleans as "true"/"false" strings
         self.labels = list(labels)
         self.apps = {}          # appid -> {"id", "appid", "app_version", "product_name", "product_vendor"}
         self.assets = {}        # id -> asset dict
@@ -107,9 +110,12 @@ class FakeSoar:
             return 401, {"failed": True, "message": "Invalid token"}
         if method == "GET" and path == "/rest/version":
             return 200, {"version": self.version}
+        if method == "GET" and path == "/rest/container_options":
+            return 200, {"label": list(self.labels), "sensitivity": [], "severity": [], "severity_colors": {},
+                         "status": [], "tags": []}
         if path == "/rest/system_settings/events":
-            if method == "GET":
-                return 200, {"label": list(self.labels), "severity": [], "status": []}
+            if method == "GET":   # real SOAR 8.x has no GET here
+                return 404, {"failed": True, "message": "Requested item not found"}
             if body and body.get("add_label"):
                 if body.get("label_name") in self.labels:
                     return 400, {"failed": True, "message": "Label already exists"}
@@ -150,7 +156,10 @@ class FakeSoar:
         config = dict(row.get("configuration") or {})
         if "api_token" in config:
             config["api_token"] = "*" * 8   # SOAR never returns password fields in clear text
+        if self.bool_as_text and isinstance(config.get("verify_server_cert"), bool):
+            config["verify_server_cert"] = str(config["verify_server_cert"]).lower()  # "true"/"false"
         row["configuration"] = config
+        row["product_name"] = None          # real SOAR 8.x returns product_name null in the asset detail
         return row
 
     def _install_app(self, body):

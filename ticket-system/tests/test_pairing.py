@@ -176,6 +176,9 @@ class PairingApiTest(ServerTestCase):
         self.assertTrue(again.json["ok"], again.json)
         self.assertEqual(set(self.statuses(again).values()), {"exists"}, again.json)
         self.assertEqual(len(self.soar.writes()), before)
+        # labels are read from container_options; the 404-only GET on system_settings/events is never used
+        self.assertEqual(self.soar.calls("GET", "/rest/system_settings/events"), [])
+        self.assertTrue(self.soar.calls("GET", "/rest/container_options"))
         self.assertEqual(len(self.acme.get("/webhooks").json), 1)
         self.assertEqual(len([a for a in self.soar.assets.values() if a["name"] == "mydemoticket"]), 1)
         self.assertEqual(len(self.soar.playbooks), 2)
@@ -206,6 +209,39 @@ class PairingApiTest(ServerTestCase):
             self.assertEqual(call["headers"].get("ph-auth-token"), SOAR_TOKEN)
             self.assertNotIn(SOAR_TOKEN.encode(), call["raw"])
             self.assertNotIn(SOAR_TOKEN, call["path"] + json.dumps(call["query"]))
+
+    def test_second_apply_with_text_booleans_writes_nothing(self):
+        self.reset_acme()
+        self.assertTrue(self.apply().json["ok"])
+        self.soar.bool_as_text = True   # SOAR may return verify_server_cert as "true"
+        try:
+            before = len(self.soar.writes())
+            again = self.apply()
+            st = self.statuses(again)
+            self.assertEqual((st["label"], st["asset"]), ("exists", "exists"), again.json)
+            self.assertEqual(set(st.values()), {"exists"}, again.json)
+            self.assertEqual(len(self.soar.writes()), before)
+        finally:
+            self.soar.bool_as_text = False
+
+    def test_label_falls_back_to_add_label_when_list_unreadable(self):
+        self.reset_acme()
+        self.soar.fail[("GET", "/rest/container_options")] = (500, "boom")
+        try:
+            st = self.statuses(self.apply(steps=["label"]))
+            self.assertEqual(st["label"], "created")
+            self.assertIn("mydemoticket", self.soar.labels)
+            # list still unreadable: POST add_label answers "already exists" -> exists
+            st = self.statuses(self.apply(steps=["label"]))
+            self.assertEqual(st["label"], "exists")
+            check = self.acme.post("/pairing/check", {"soar_url": self.soar.url, "soar_token": SOAR_TOKEN,
+                                                      "verify_tls": False})
+            self.assertEqual({c["check"]: c["status"] for c in check.json["checks"]}["label"], "info")
+        finally:
+            del self.soar.fail[("GET", "/rest/container_options")]
+        st = self.statuses(self.apply(steps=["label"]))
+        self.assertEqual(st["label"], "exists")
+        self.assertEqual(self.soar.calls("GET", "/rest/system_settings/events"), [])
 
     def test_changed_ticket_url_rotates_token_and_updates_asset(self):
         self.reset_acme()
@@ -317,6 +353,7 @@ class PairingApiTest(ServerTestCase):
         self.assertEqual(checks["splunk_asset"], "ok")
         self.assertEqual(checks["es_asset"], "failed")
         self.assertIn(checks["app"], ("ok", "info"))
+        self.assertIn(checks["label"], ("ok", "info"))
         self.assertFalse(resp.json["ok"])
         self.assertEqual(resp.json["soar_version"], "8.8.0.123")
         self.assertEqual([c["method"] for c in self.soar.calls()], ["GET"] * len(self.soar.calls()))  # read only

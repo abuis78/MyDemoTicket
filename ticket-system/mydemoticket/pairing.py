@@ -264,6 +264,15 @@ class _Soar:
         return str(self.call("GET", "/rest/version").get("version") or "unknown")
 
 
+def _same_value(current, wanted):
+    """Compare an asset config value read from SOAR; booleans may come back as "true"/"false" strings."""
+    if isinstance(wanted, bool):
+        if isinstance(current, str):
+            current = {"true": True, "false": False}.get(current.strip().lower(), current)
+        return current is wanted
+    return current == wanted
+
+
 def _message(payload):
     if isinstance(payload, dict):
         text = payload.get("message") or payload.get("error") or ""
@@ -499,11 +508,10 @@ class PairingMixin:
                     add("app", "info", "MyDemoTicket app not installed yet (bundle %s)" % manifest.get("app_version"))
             except (_StepFailed, OSError, ValueError) as exc:
                 add("app", "failed", str(exc))
-            label_known = None
-            try:
-                label_known = self._soar_label_exists(soar, values["label"])
-            except _StepFailed as exc:
-                add("label", "failed", str(exc))
+            label_known = self._soar_label_exists(soar, values["label"])
+            if label_known is None:
+                add("label", "info", "label '%s': SOAR label list not readable, apply adds it if missing"
+                    % values["label"])
             else:
                 add("label", "ok" if label_known else "info",
                     "label '%s' %s" % (values["label"], "exists" if label_known else "will be created"))
@@ -521,14 +529,20 @@ class PairingMixin:
 
     @staticmethod
     def _soar_label_exists(soar, label):
-        """True/False if the event settings list the label, None if the answer has no label list."""
-        payload = soar.call("GET", "/rest/system_settings/events")
-        for key in ("label", "labels", "label_names"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                names = [v.get("name") if isinstance(v, dict) else v for v in value]
-                return label in names
-        return None
+        """True/False from the container label list (GET /rest/container_options), None if unknown.
+
+        SOAR 8.x answers GET /rest/system_settings/events with 404, so labels are only read from
+        container_options; when that fails the caller falls back to POST add_label.
+        """
+        try:
+            payload = soar.call("GET", "/rest/container_options")
+        except _StepFailed:
+            return None
+        value = payload.get("label")
+        if not isinstance(value, list):
+            return None
+        names = [v.get("name") if isinstance(v, dict) else v for v in value]
+        return label in names
 
     # ----------------------------------------------------------- POST /pairing/apply
     def pairing_apply(self, ctx):
@@ -710,8 +724,9 @@ class PairingMixin:
         token_ok = bool(old_token_id) and self.db.query_one(
             "SELECT 1 FROM api_tokens WHERE id = ? AND user_id = ?", (old_token_id, user["id"])) is not None
         if row is not None:
+            # only the four plain fields count: SOAR masks api_token and may return product_name as null
             current = row.get("configuration") or {}
-            same = all(current.get(k) == v for k, v in config.items())
+            same = all(_same_value(current.get(k), v) for k, v in config.items())
             if same and token_ok and state.get("asset_id") == row.get("id"):
                 return "exists", "asset %s (id %s) -> %s" % (name, row.get("id"), values["ticket_base_url"])
         token = new_token()

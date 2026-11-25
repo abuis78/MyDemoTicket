@@ -392,7 +392,7 @@ REST imports, e.g. *Administrator*).
    |---|---|---|
    | `user` | integration user `soar-<tenant>` (role `integration`, no password) | – |
    | `webhook` | webhook of type `soar` for the SOAR URL; the token is its secret (updated if it changed) | – |
-   | `label` | container label | `GET`/`POST /rest/system_settings/events` |
+   | `label` | container label; existing labels are read from `GET /rest/container_options` (key `label`), a missing one is added (`GET /rest/system_settings/events` answers 404 on SOAR 8.x) | `GET /rest/container_options`, `POST /rest/system_settings/events` |
    | `app` | MyDemoTicket app from `soar-app/mydemoticket`, skipped if the same version is installed | `GET /rest/app?_filter_appid=…`, `POST /rest/app` |
    | `asset` | asset of the app with `base_url`, a new integration token, `source_tag` `soar`, `ingest_label` | `GET /rest/asset?_filter_name=…`, `POST /rest/asset` or `POST /rest/asset/<id>` |
    | `playbook_es_mirror`, `playbook_ticket_from_es` | both playbooks with the asset names and label substituted, imported and activated | `GET /rest/playbook?_filter_name=…`, `POST /rest/import_playbook`, `POST /rest/playbook/<id>` |
@@ -400,6 +400,9 @@ REST imports, e.g. *Administrator*).
 Run it again at any time: unchanged parts report `exists` and nothing is created twice. A new
 integration token is created only when the asset has to be created or changed (other ticket base
 URL or label, or the pairing token was revoked); the old pairing token is revoked afterwards.
+Only `base_url`, `ingest_label`, `source_tag` and `verify_server_cert` are compared (SOAR masks
+`api_token` and may return booleans as text). If SOAR cannot list the labels, the `label` step
+sends `add_label` anyway and treats "already exists" as `exists`.
 When SOAR is not reachable or rejects the token, nothing is changed. The SOAR token is never shown,
 logged or written to the audit log (`pairing.check`, `pairing.apply` record only host names and
 step results). The playbook `mydemoticket_es_mirror` fails with a clear message when the Splunk or
@@ -461,6 +464,12 @@ SOAR rejects containers with unknown labels. Via REST (verified live on SOAR 8.7
 ```bash
 curl -s -X POST -H "ph-auth-token: $SOAR_TOKEN" -H "Content-Type: application/json" \
   -d '{"add_label": true, "label_name": "mydemoticket"}' "$SOAR/rest/system_settings/events"
+```
+
+List the existing labels (`GET /rest/system_settings/events` is not available, HTTP 404):
+
+```bash
+curl -s -H "ph-auth-token: $SOAR_TOKEN" "$SOAR/rest/container_options" | python3 -c 'import json,sys; print(json.load(sys.stdin)["label"])'
 ```
 
 ### 9.4 Webhook of type `soar` (one per tenant)
