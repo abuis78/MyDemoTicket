@@ -938,59 +938,137 @@
 
   function activeText(active) { return active ? t("common.active") : t("common.inactive"); }
 
+  // Roles for the selects: GET /roles (built-in + custom of the tenant); older servers have no /roles.
+  var FALLBACK_ROLES = ["admin", "agent", "requester", "integration"];
+
+  function roleOptions(includePlatform, current) {
+    var names = session.roles.length ? session.roles.map(function (r) { return r.name; }) : FALLBACK_ROLES.slice();
+    names = names.filter(function (n) { return n !== "platform_admin"; });
+    if (includePlatform) names.push("platform_admin");
+    if (current && names.indexOf(current) < 0) names.push(current);
+    return names.map(function (n) { return [n, roleLabel(n)]; });
+  }
+
+  // Modal dialog: new password twice; mismatch or < 8 characters never sends a request.
+  function passwordDialog(u) {
+    var first = h("input", { id: "sp-new", type: "password", autocomplete: "new-password", required: true,
+      "aria-describedby": "sp-hint" });
+    var second = h("input", { id: "sp-repeat", type: "password", autocomplete: "new-password", required: true });
+    var message = h("div", { class: "error", role: "alert" });
+    var dlg = h("dialog", { class: "modal", "aria-labelledby": "sp-title" });
+    function close() { if (dlg.close) dlg.close(); else dlg.remove(); }
+    dlg.addEventListener("close", function () { dlg.remove(); });
+    dlg.appendChild(h("form", {
+      onsubmit: function (ev) {
+        ev.preventDefault();
+        message.textContent = "";
+        var problem = passwordProblem(first.value, second.value);
+        if (problem) { message.textContent = t(problem); first.focus(); return; }
+        api("PATCH", "/users/" + encodeURIComponent(u.username), { password: first.value }).then(function () {
+          close();
+          toast(t("users.password_set", { user: u.username }));
+        }).catch(function (err) {
+          if (err && err.status === 401) { close(); fail(err); return; }
+          message.textContent = errorText(err);
+        });
+      }
+    },
+      h("div", { class: "panel-head" }, h("h2", { id: "sp-title", text: t("users.set_password_for", { user: u.username }) })),
+      h("div", { class: "panel-body" },
+        field(t("pw.new"), first, { required: true }), field(t("pw.repeat"), second, { required: true }),
+        h("div", { class: "muted", id: "sp-hint", text: t("pw.hint") }), message,
+        h("div", { class: "actions" },
+          h("button", { class: "primary", type: "submit" }, t("users.set_password")),
+          h("button", { type: "button", onclick: close }, t("common.cancel"))))));
+    document.body.appendChild(dlg);
+    if (dlg.showModal) dlg.showModal(); else dlg.setAttribute("open", "");
+    first.focus();
+  }
+
   function viewUsers() {
-    api("GET", "/users").then(function (users) {
+    Promise.all([api("GET", "/users"), loadRoles()]).then(function (res) {
+      var users = res[0];
       session.users = users;
       var secretBox = h("div");
       var platform = isPlatform();
-      var rows = users.map(function (u) {
+
+      function userRow(u, editing) {
         // changing a role to or from platform_admin is not possible (422), so that select is read-only
         var isPa = u.role === "platform_admin";
-        var role = select("role-" + u.username,
-          (isPa ? ["platform_admin"] : ["admin", "agent", "requester", "integration"]).map(function (r) {
-            return [r, roleLabel(r)];
-          }), u.role);
+        var path = "/users/" + encodeURIComponent(u.username);
+        var role = select("role-" + u.username, isPa ? [["platform_admin", roleLabel("platform_admin")]]
+          : roleOptions(false, u.role), u.role);
         role.setAttribute("aria-label", t("users.role_of", { user: u.username }));
         if (isPa) role.disabled = true;
         role.addEventListener("change", function () {
-          api("PATCH", "/users/" + encodeURIComponent(u.username), { role: role.value })
+          api("PATCH", path, { role: role.value })
             .then(function () { toast(t("users.role_updated")); }).catch(function (e) { fail(e); viewUsers(); });
         });
-        return h("tr", null,
-          h("td", { text: u.username }), h("td", { text: u.display_name }), h("td", null, role),
+        var display = h("input", { id: "ue-display-" + u.username, value: u.display_name || "", maxlength: 200,
+          "aria-label": t("users.display_name_of", { user: u.username }) });
+        var email = h("input", { id: "ue-email-" + u.username, type: "email", value: u.email || "",
+          "aria-label": t("users.email_of", { user: u.username }) });
+        var row;
+        function swap(edit) {
+          var next = userRow(u, edit);
+          row.parentNode.replaceChild(next, row);
+          var focusEl = edit ? next.querySelector("input") : next.querySelector("button");
+          if (focusEl) focusEl.focus();
+        }
+        var actions = editing ? [
+          h("button", {
+            type: "button", class: "primary", onclick: function () {
+              var body = {};
+              if (display.value.trim() !== (u.display_name || "")) body.display_name = display.value.trim();
+              if (email.value.trim() !== (u.email || "")) body.email = email.value.trim();
+              if (!Object.keys(body).length) { swap(false); return; }
+              api("PATCH", path, body).then(function (saved) {
+                Object.assign(u, saved || body);
+                toast(t("users.saved", { user: u.username }));
+                swap(false);
+              }).catch(fail);
+            }
+          }, t("common.save")),
+          h("button", { type: "button", onclick: function () { swap(false); } }, t("common.cancel"))
+        ] : [
+          h("button", {
+            type: "button", "aria-label": t("users.edit_aria", { user: u.username }),
+            onclick: function () { swap(true); }
+          }, t("common.edit")),
+          h("button", {
+            type: "button", onclick: function () {
+              api("POST", path + "/tokens", { name: "ui" }).then(function (tok) {
+                clear(secretBox);
+                secretBox.appendChild(h("div", { class: "secret-box" },
+                  h("strong", { text: t("users.token_shown", { user: u.username }) }),
+                  h("div", { class: "mono", text: tok.token })));
+              }).catch(fail);
+            }
+          }, t("users.new_token")),
+          h("button", {
+            type: "button", onclick: function () {
+              api("PATCH", path, { active: !u.active }).then(viewUsers).catch(fail);
+            }
+          }, u.active ? t("users.deactivate") : t("users.activate")),
+          h("button", { type: "button", onclick: function () { passwordDialog(u); } }, t("users.set_password"))
+        ];
+        row = h("tr", null,
+          h("td", { text: u.username }),
+          editing ? h("td", null, display) : h("td", { text: u.display_name }),
+          editing ? h("td", null, email) : h("td", { text: u.email || "" }),
+          h("td", null, role),
           platform ? h("td", { text: u.tenant || t("users.platform") }) : null,
           h("td", { text: u.teams.join(", ") }), h("td", { text: activeText(u.active) }),
-          h("td", { class: "actions" },
-            h("button", {
-              onclick: function () {
-                api("POST", "/users/" + encodeURIComponent(u.username) + "/tokens", { name: "ui" }).then(function (tok) {
-                  clear(secretBox);
-                  secretBox.appendChild(h("div", { class: "secret-box" },
-                    h("strong", { text: t("users.token_shown", { user: u.username }) }),
-                    h("div", { class: "mono", text: tok.token })));
-                }).catch(fail);
-              }
-            }, t("users.new_token")),
-            h("button", {
-              onclick: function () {
-                api("PATCH", "/users/" + encodeURIComponent(u.username), { active: !u.active })
-                  .then(viewUsers).catch(fail);
-              }
-            }, u.active ? t("users.deactivate") : t("users.activate")),
-            h("button", {
-              onclick: function () {
-                var pw = window.prompt(t("users.set_password"));
-                if (!pw) return;
-                api("PATCH", "/users/" + encodeURIComponent(u.username), { password: pw })
-                  .then(function () { toast(t("common.saved")); }).catch(fail);
-              }
-            }, t("users.set_password"))));
-      });
+          h("td", { class: "actions" }, actions));
+        return row;
+      }
+
+      var rows = users.map(function (u) { return userRow(u, false); });
       var name = h("input", { id: "u-name", required: true });
       var display = h("input", { id: "u-display" });
-      var roleSel = select("u-role", ["agent", "requester", "integration", "admin"]
-        .concat(platform ? ["platform_admin"] : []).map(function (r) { return [r, roleLabel(r)]; }), "agent");
-      var pw = h("input", { id: "u-pw", type: "password", autocomplete: "new-password" });
+      var email = h("input", { id: "u-email", type: "email" });
+      var roleSel = select("u-role", roleOptions(platform), "agent");
+      var pw = h("input", { id: "u-pw", type: "password", autocomplete: "new-password", "aria-describedby": "u-pw-hint" });
       var teamSel = select("u-team", session.teams.map(function (x) { return x.name; }), "", t("common.none"));
       var activeSlug = (session.me.active_tenant || session.me.tenant || {}).slug;
       // platform admins choose the tenant of the new user; tenant admins always create in their own tenant
@@ -998,6 +1076,7 @@
         return [x.slug, x.name + " (" + x.slug + ")" + (x.active ? "" : t("tenant.inactive_suffix"))];
       }), activeSlug) : null;
       var tenantHint = h("div", { class: "wide muted", id: "u-tenant-hint" });
+      var message = h("div", { class: "wide error", role: "alert" });
       function syncTenantFields() {
         if (!platform) return;
         var noTenant = roleSel.value === "platform_admin";
@@ -1015,7 +1094,10 @@
       var form = h("form", {
         class: "panel-body form-grid", onsubmit: function (ev) {
           ev.preventDefault();
-          var body = { username: name.value, display_name: display.value, role: roleSel.value };
+          message.textContent = "";
+          if (pw.value && pw.value.length < MIN_PASSWORD) { message.textContent = t("pw.too_short"); pw.focus(); return; }
+          var body = { username: name.value.trim(), display_name: display.value.trim(), role: roleSel.value };
+          if (email.value.trim()) body.email = email.value.trim();
           if (pw.value) body.password = pw.value;
           if (teamSel.value && !teamSel.disabled) body.teams = [teamSel.value];
           if (platform && roleSel.value !== "platform_admin") body.tenant = tenantSel.value;
@@ -1023,15 +1105,19 @@
             toast(u.tenant && u.tenant !== activeSlug ? t("users.created_in_tenant", { tenant: u.tenant })
               : t("users.created"));
             refreshReference().then(viewUsers);
-          }).catch(fail);
+          }).catch(function (err) {
+            if (err && err.status === 401) { fail(err); return; }
+            message.textContent = errorText(err);
+          });
         }
       }, field(t("users.username"), name, { required: true }), field(t("users.display_name"), display),
-        field(t("users.role"), roleSel),
+        field(t("users.email"), email), field(t("users.role"), roleSel),
         platform ? field(t("users.tenant"), tenantSel, { required: true }) : null,
         field(t("users.password_optional"), pw), field(t("users.team"), teamSel), tenantHint,
+        h("div", { class: "wide muted", id: "u-pw-hint", text: t("pw.hint") }), message,
         h("div", { class: "wide" }, h("button", { class: "primary", type: "submit" }, t("users.create"))));
       syncTenantFields();
-      var headers = [t("users.username"), t("users.display_name"), t("users.role")]
+      var headers = [t("users.username"), t("users.display_name"), t("users.email"), t("users.role")]
         .concat(platform ? [t("users.tenant")] : [])
         .concat([t("users.teams"), t("users.status"), ""]);
       render(adminPanel(t("users.title"),
