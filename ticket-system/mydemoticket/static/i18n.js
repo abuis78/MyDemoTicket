@@ -64,6 +64,7 @@
     "error.tenant_not_found": "Diesen Mandanten gibt es nicht. Bitte wähle einen anderen.",
     "error.forbidden": "Nicht erlaubt: {message}",
     "error.not_found": "Nicht gefunden (gehört eventuell zu einem anderen Mandanten): {message}",
+    "error.no_access": "Für diese Seite fehlt dir die Berechtigung.",
 
     // tenant switcher
     "tenant.inactive_suffix": " (inaktiv)",
@@ -492,6 +493,7 @@
     "error.tenant_not_found": "This tenant does not exist. Please choose another tenant.",
     "error.forbidden": "Not allowed: {message}",
     "error.not_found": "Not found (it may belong to another tenant): {message}",
+    "error.no_access": "You do not have permission to open this page.",
 
     "tenant.inactive_suffix": " (inactive)",
     "tenant.switched": "Switched to tenant {name}",

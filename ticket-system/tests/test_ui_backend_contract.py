@@ -67,6 +67,20 @@ class AppJsContractTest(unittest.TestCase):
         # users with a custom role but without roles.manage get 403 on /roles; GET /me has role_label
         self.assertIn("me.role_label", self.function_body("roleLabel"))
 
+    def test_admin_pages_are_guarded_like_their_nav_links(self):
+        # e.g. analyst_l1 may GET /users (tickets.read_all) but must not get the users admin page via URL
+        html = read("index.html")
+        block = re.search(r"var ROUTE_PERMISSIONS = \{(.*?)\};", self.js, re.S).group(1)
+        guards = dict(re.findall(r'"(/[a-z/-]+)": "([a-z_.]+)"', block))
+        links = dict(re.findall(r'href="#(/[a-z/-]+)" data-nav="[a-z-]+" data-perm="([a-z_.]+)"', html))
+        self.assertTrue(links)
+        self.assertEqual(guards, links)
+        route = self.function_body("route")
+        self.assertLess(route.index("routeAllowed(r.path)"), route.index("viewUsers()"))
+        allowed = self.function_body("routeAllowed")
+        self.assertIn('path === "/new") return canCreate()', allowed)
+        self.assertIn('path === "/admin/audit") return isAdmin()', allowed)
+
 
 if __name__ == "__main__":
     unittest.main()

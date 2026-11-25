@@ -388,12 +388,27 @@
   });
 
   // ----------------------------------------------------------------- router
+  // Pages a user without the permission must not see even via a typed URL (same permission as the nav link
+  // in index.html). Some of their GET requests succeed (e.g. /users with tickets.read_all), the writes do not.
+  var ROUTE_PERMISSIONS = {
+    "/admin/users": "users.manage", "/admin/roles": "roles.manage", "/admin/teams": "teams.manage",
+    "/admin/custom-fields": "fields.manage", "/admin/webhooks": "webhooks.manage",
+    "/admin/tenants": "tenants.manage", "/reports": "reports.view"
+  };
+
+  function routeAllowed(path) {
+    if (path === "/new") return canCreate();
+    if (path === "/admin/audit") return isAdmin();
+    return !ROUTE_PERMISSIONS[path] || can(ROUTE_PERMISSIONS[path]);
+  }
+
   function route() {
     if (!session.me) { showLogin(); return; }
     var r = parseHash();
     var nav = "tickets";
     var m;
-    if (r.path === "/new") { nav = "new"; viewNew(); }
+    if (!routeAllowed(r.path)) { nav = ""; render(h("p", { class: "error", role: "alert", text: t("error.no_access") })); }
+    else if (r.path === "/new") { nav = "new"; viewNew(); }
     else if ((m = r.path.match(/^\/tickets\/([^/]+)$/))) { nav = ""; viewDetail(decodeURIComponent(m[1])); }
     else if (r.path === "/admin/users") { nav = "users"; viewUsers(); }
     else if (r.path === "/admin/roles") { nav = "roles"; viewRoles(); }
