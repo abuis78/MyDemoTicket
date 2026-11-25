@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en">
+<html lang="de">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -8,42 +8,45 @@
 </head>
 <body>
   <header class="topbar">
-    <a class="brand" href="#/tickets">MyDemoTicket</a>
+    <a class="brand" href="#/tickets" data-i18n="app.name">MyDemoTicket</a>
     <form class="global-search" id="global-search" role="search" hidden>
-      <input type="search" id="global-search-input" placeholder="Search tickets" aria-label="Search tickets">
+      <input type="search" id="global-search-input" placeholder="Search tickets" aria-label="Search tickets"
+        data-i18n-placeholder="header.search_placeholder" data-i18n-aria-label="header.search_placeholder">
     </form>
     <div class="userbox" id="userbox" hidden>
       <span class="tenant-box">
-        <span class="tenant-caption" id="tenant-caption">Tenant</span>
+        <span class="tenant-caption" id="tenant-caption" data-i18n="header.tenant">Tenant</span>
         <span class="tenant-name" id="tenant-name" aria-describedby="tenant-caption"></span>
-        <label class="sr-only" for="tenant-switch">Active tenant</label>
+        <label class="sr-only" for="tenant-switch" data-i18n="header.active_tenant">Active tenant</label>
         <select id="tenant-switch" class="tenant-switch" hidden></select>
       </span>
-      <span id="user-name"></span>
-      <button type="button" class="link" id="logout">Log out</button>
+      <a class="user-name" id="user-name" href="#/profile" data-i18n-title="header.profile_hint"></a>
+      <button type="button" class="link" id="logout" data-i18n="header.logout">Log out</button>
     </div>
   </header>
   <div class="layout">
     <nav class="sidebar" id="sidebar" hidden>
-      <div class="nav-section">Tickets</div>
-      <a href="#/tickets" data-nav="tickets">All open</a>
-      <a href="#/tickets?mine=1" data-nav="mine">Assigned to me</a>
-      <a href="#/tickets?unassigned=1" data-nav="unassigned">Unassigned</a>
-      <a href="#/tickets?all=1" data-nav="all">All tickets</a>
-      <a href="#/new" data-nav="new">Create new</a>
-      <a class="reports-only" href="#/reports" data-nav="reports">Reports</a>
-      <div class="nav-section admin-only">Administration</div>
-      <a class="admin-only" href="#/admin/users" data-nav="users">Users</a>
-      <a class="admin-only" href="#/admin/teams" data-nav="teams">Teams</a>
-      <a class="admin-only" href="#/admin/custom-fields" data-nav="custom-fields">Custom fields</a>
-      <a class="admin-only" href="#/admin/webhooks" data-nav="webhooks">Webhooks</a>
-      <a class="admin-only" href="#/admin/audit" data-nav="audit">Audit / Splunk</a>
-      <div class="nav-section platform-only">Platform</div>
-      <a class="platform-only" href="#/admin/tenants" data-nav="tenants">Tenants</a>
+      <div class="nav-section" data-i18n="nav.tickets">Tickets</div>
+      <a href="#/tickets" data-nav="tickets" data-i18n="nav.all_open">All open</a>
+      <a href="#/tickets?mine=1" data-nav="mine" data-i18n="nav.mine">Assigned to me</a>
+      <a href="#/tickets?unassigned=1" data-nav="unassigned" data-i18n="nav.unassigned">Unassigned</a>
+      <a href="#/tickets?all=1" data-nav="all" data-i18n="nav.all">All tickets</a>
+      <a class="create-only" href="#/new" data-nav="new" data-i18n="nav.new">Create new</a>
+      <a class="reports-only" href="#/reports" data-nav="reports" data-perm="reports.view" data-i18n="nav.reports">Reports</a>
+      <div class="nav-section admin-only" id="nav-admin" data-i18n="nav.administration">Administration</div>
+      <a class="admin-only" href="#/admin/users" data-nav="users" data-perm="users.manage" data-i18n="nav.users">Users</a>
+      <a class="admin-only" href="#/admin/roles" data-nav="roles" data-perm="roles.manage" data-i18n="nav.roles">Roles</a>
+      <a class="admin-only" href="#/admin/teams" data-nav="teams" data-perm="teams.manage" data-i18n="nav.teams">Teams</a>
+      <a class="admin-only" href="#/admin/custom-fields" data-nav="custom-fields" data-perm="fields.manage" data-i18n="nav.custom_fields">Custom fields</a>
+      <a class="admin-only" href="#/admin/webhooks" data-nav="webhooks" data-perm="webhooks.manage" data-i18n="nav.webhooks">Webhooks</a>
+      <a class="admin-only" href="#/admin/audit" data-nav="audit" data-i18n="nav.audit">Audit / Splunk</a>
+      <div class="nav-section platform-only" data-i18n="nav.platform">Platform</div>
+      <a class="platform-only" href="#/admin/tenants" data-nav="tenants" data-perm="tenants.manage" data-i18n="nav.tenants">Tenants</a>
     </nav>
     <main id="main" class="content" tabindex="-1"></main>
   </div>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/static/i18n.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>
