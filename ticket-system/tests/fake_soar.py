@@ -5,6 +5,7 @@ assets by name (GET masks api_token and returns product_name null, as SOAR 8.x d
 (listed by GET /rest/container_options; GET /rest/system_settings/events answers 404 as on SOAR 8.x),
 playbooks by name with draft mode when the coa metadata is missing.
 ``fail[(method, path_prefix)] = (status, message)`` injects errors; ``requests`` records every call.
+``redirect_to = "<url>"`` answers every request with ``302 Location: <url><path>`` (redirect mode).
 """
 
 import base64
@@ -25,6 +26,7 @@ class FakeSoar:
         self.lock = threading.Lock()
         self.requests = []
         self.fail = {}
+        self.redirect_to = None     # redirect mode: every request answers 302 to this base URL
         self.bool_as_text = False   # True: asset GET returns booleans as "true"/"false" strings
         self.labels = list(labels)
         self.apps = {}          # appid -> {"id", "appid", "app_version", "product_name", "product_vendor"}
@@ -55,10 +57,16 @@ class FakeSoar:
                     fake.requests.append({"method": self.command, "path": parsed.path, "query": query,
                                           "body": body, "raw": raw,
                                           "headers": {k.lower(): v for k, v in self.headers.items()}})
-                    status, payload = fake.handle(self.command, parsed.path, query, body,
-                                                  self.headers.get("ph-auth-token"))
+                    redirect = fake.redirect_to
+                    if redirect:
+                        status, payload = 302, {"redirect": True}
+                    else:
+                        status, payload = fake.handle(self.command, parsed.path, query, body,
+                                                      self.headers.get("ph-auth-token"))
                 data = json.dumps(payload).encode("utf-8")
                 self.send_response(status)
+                if redirect:
+                    self.send_header("Location", redirect.rstrip("/") + self.path)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()

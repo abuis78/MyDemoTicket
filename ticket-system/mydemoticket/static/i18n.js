@@ -530,13 +530,15 @@
     "pairing.check.es_asset": "Enterprise-Security-Asset",
     "pairing.check.app": "MyDemoTicket-App",
     "pairing.check.label": "Container-Label",
+    "pairing.check.insecure_http": "Unverschlüsselte Verbindung (http)",
     "pairing.status.created": "angelegt",
     "pairing.status.updated": "aktualisiert",
     "pairing.status.exists": "vorhanden",
     "pairing.status.skipped": "übersprungen",
     "pairing.status.failed": "fehlgeschlagen",
     "pairing.status.ok": "in Ordnung",
-    "pairing.status.info": "Hinweis"
+    "pairing.status.info": "Hinweis",
+    "pairing.status.warn": "Warnung"
   };
 
   var en = {
@@ -1045,13 +1047,15 @@
     "pairing.check.es_asset": "Enterprise Security asset",
     "pairing.check.app": "MyDemoTicket app",
     "pairing.check.label": "Container label",
+    "pairing.check.insecure_http": "Unencrypted connection (http)",
     "pairing.status.created": "created",
     "pairing.status.updated": "updated",
     "pairing.status.exists": "exists",
     "pairing.status.skipped": "skipped",
     "pairing.status.failed": "failed",
     "pairing.status.ok": "ok",
-    "pairing.status.info": "note"
+    "pairing.status.info": "note",
+    "pairing.status.warn": "warning"
   };
 
   var STORAGE_KEY = "mdt.language";

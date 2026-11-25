@@ -362,7 +362,37 @@ class PairingApiTest(ServerTestCase):
         self.assertEqual(event["outcome"], "failure")
         self.assertEqual(event["details"]["checks"]["es_asset"], "failed")
         bad = self.acme.post("/pairing/check", {"soar_url": self.soar.url, "soar_token": "nope-nope"})
-        self.assertEqual({c["check"]: c["status"] for c in bad.json["checks"]}, {"connection": "failed"})
+        self.assertEqual({c["check"]: c["status"] for c in bad.json["checks"]}, 
+                         {"insecure_http": "warn", "connection": "failed"})
+
+    def test_check_warns_on_http_and_reports_redirect(self):
+        target = FakeSoar(SOAR_TOKEN)
+        self.addCleanup(target.close)
+        self.soar.redirect_to = target.url
+        resp = self.acme.post("/pairing/check", {"soar_url": self.soar.url, "soar_token": SOAR_TOKEN,
+                                                 "verify_tls": False})
+        self.assertEqual(resp.status, 200, resp)
+        checks = {c["check"]: c for c in resp.json["checks"]}
+        self.assertEqual(checks["insecure_http"]["status"], "warn")  # http:// is reported, not blocking
+        self.assertEqual(checks["connection"]["status"], "failed")
+        self.assertIn("redirect (HTTP 302) to 127.0.0.1; use the final URL", checks["connection"]["detail"])
+        self.assertEqual(target.calls(), [])
+        self.assertFalse(resp.json["ok"])
+        resp = self.apply()
+        self.assertEqual(resp.json["connection"]["status"], "failed")
+        self.assertIn("redirect", resp.json["connection"]["detail"])
+        self.assertEqual(target.calls(), [])
+        self.soar.redirect_to = None
+        resp = self.acme.post("/pairing/check", {"soar_url": self.soar.url, "soar_token": SOAR_TOKEN,
+                                                 "verify_tls": False})
+        checks = {c["check"]: c["status"] for c in resp.json["checks"]}
+        self.assertEqual((checks["insecure_http"], checks["connection"]), ("warn", "ok"))
+
+    def test_check_has_no_http_warning_for_https(self):
+        resp = self.acme.post("/pairing/check", {"soar_url": "https://127.0.0.1:1", "soar_token": SOAR_TOKEN,
+                                                 "verify_tls": False})
+        self.assertEqual(resp.status, 200, resp)
+        self.assertNotIn("insecure_http", [c["check"] for c in resp.json["checks"]])
 
     # ------------------------------------------------------------------ permissions + tenants
     def test_permissions(self):
@@ -426,6 +456,26 @@ class SoarClientTest(unittest.TestCase):
         soar = Holder()._soar("https://soar.invalid", "t", False, pairing.Redactor("t"))
         self.assertEqual(soar.version(), "9.9")
         self.assertEqual(calls, [("https://soar.invalid", False)])
+
+    def test_redirect_is_not_followed_and_token_stays_home(self):
+        target = FakeSoar(SOAR_TOKEN)      # second local server, the redirect target
+        self.addCleanup(target.close)
+        origin = FakeSoar(SOAR_TOKEN)
+        self.addCleanup(origin.close)
+        origin.redirect_to = target.url.replace("127.0.0.1", "localhost")
+        client = pairing.SoarClient(origin.url, SOAR_TOKEN)
+        with self.assertRaises(pairing.SoarError) as caught:
+            client.request("GET", "/rest/version")
+        self.assertIn("SOAR answered with a redirect (HTTP 302) to localhost; use the final URL", str(caught.exception))
+        self.assertEqual(len(origin.calls()), 1)
+        self.assertEqual(target.calls(), [])  # nothing (and so no ph-auth-token) reached the target
+        with self.assertRaises(pairing.SoarError):
+            client.request("POST", "/rest/app", body={"app": "x"})
+        self.assertEqual(target.calls(), [])
+        soar = pairing._Soar(client, pairing.Redactor(SOAR_TOKEN))
+        with self.assertRaises(pairing._StepFailed) as step:
+            soar.version()
+        self.assertIn("redirect", str(step.exception))
 
     def test_redactor(self):
         r = pairing.Redactor("abc123")

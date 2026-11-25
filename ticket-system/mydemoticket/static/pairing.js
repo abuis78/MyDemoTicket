@@ -6,7 +6,7 @@
   "use strict";
 
   var STEP_KEYS = ["user", "webhook", "label", "app", "asset", "playbook_es_mirror", "playbook_ticket_from_es"];
-  var CHECK_KEYS = ["connection", "splunk_asset", "es_asset", "app", "label"];
+  var CHECK_KEYS = ["insecure_http", "connection", "splunk_asset", "es_asset", "app", "label"];
 
   function view(kit) {
     var h = kit.h, t = kit.t;

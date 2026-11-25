@@ -182,8 +182,18 @@ class SoarError(Exception):
     """Connection-level failure (no HTTP answer)."""
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follows a 3xx: urllib would resend the ``ph-auth-token`` header to the redirect target."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None  # urllib then raises HTTPError with the 3xx status
+
+
 class SoarClient:
-    """Minimal Splunk SOAR REST client. The token goes only into the ``ph-auth-token`` header."""
+    """Minimal Splunk SOAR REST client. The token goes only into the ``ph-auth-token`` header.
+
+    Redirects are never followed (the token must not reach another host); a 3xx is a connection error.
+    """
 
     def __init__(self, base_url, token, verify_tls=True, timeout=30):
         self.base_url = base_url.rstrip("/")
@@ -208,10 +218,15 @@ class SoarClient:
             if not self.verify_tls:
                 context.check_hostname = False
                 context.verify_mode = ssl.CERT_NONE
+        handlers = [_NoRedirect()]
+        if context is not None:
+            handlers.append(urllib.request.HTTPSHandler(context=context))
+        opener = urllib.request.build_opener(*handlers)
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout, context=context) as resp:
+            with opener.open(req, timeout=self.timeout) as resp:
                 status, raw = resp.status, resp.read()
         except urllib.error.HTTPError as exc:
+            location = exc.headers.get("Location") if exc.headers is not None else None
             try:
                 raw = exc.read()
             except Exception:  # pragma: no cover - defensive
@@ -219,6 +234,10 @@ class SoarClient:
             finally:
                 exc.close()
             status = exc.code
+            if 300 <= status < 400:
+                target = urllib.parse.urlsplit(urllib.parse.urljoin(url, location or "")).hostname or "?"
+                raise SoarError("SOAR answered with a redirect (HTTP %d) to %s; use the final URL"
+                                % (status, target))
         except (urllib.error.URLError, OSError, ValueError) as exc:
             raise SoarError("connection error: %s" % getattr(exc, "reason", exc))
         try:
@@ -478,6 +497,8 @@ class PairingMixin:
         def add(name, status, detail):
             checks.append({"check": name, "status": status, "detail": redact(detail)})
 
+        if urllib.parse.urlsplit(values["soar_url"]).scheme.lower() == "http":
+            add("insecure_http", "warn", "SOAR URL uses http://: the token is sent unencrypted, use https://")
         version = None
         try:
             version = soar.version()
