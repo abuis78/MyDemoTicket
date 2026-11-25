@@ -404,7 +404,36 @@
     "audit.last_error": "Letzter Fehler",
     "audit.none": "keiner",
     "audit.local_note": "Jede Aktion wird zusätzlich in das lokale Audit-Log geschrieben. Die Zahlen gelten seit dem Serverstart.",
-    "audit.local_note_count": "Jede Aktion wird zusätzlich in das lokale Audit-Log geschrieben ({n} Ereignisse). Die Zahlen gelten seit dem Serverstart."
+    "audit.local_note_count": "Jede Aktion wird zusätzlich in das lokale Audit-Log geschrieben ({n} Ereignisse). Die Zahlen gelten seit dem Serverstart.",
+
+    // splunk HEC connection
+    "splunk.title": "Splunk-Verbindung (HEC)",
+    "splunk.precedence_hint": "Die hier gespeicherte Einstellung hat Vorrang vor den Umgebungsvariablen MYDEMOTICKET_HEC_*. Das Token wird nie angezeigt.",
+    "splunk.url": "HEC-URL",
+    "splunk.url_placeholder": "https://splunk.example.invalid:8088",
+    "splunk.index": "Index",
+    "splunk.index_placeholder": "z. B. mydemoticket_audit",
+    "splunk.token": "HEC-Token",
+    "splunk.token_keep": "leer lassen = gespeichertes Token behalten",
+    "splunk.token_empty": "noch kein Token gespeichert",
+    "splunk.clear_token": "Gespeichertes Token löschen",
+    "splunk.verify": "TLS-Zertifikat prüfen",
+    "splunk.enabled": "Weiterleitung an Splunk aktiv",
+    "splunk.state": "Aktueller Stand",
+    "splunk.token_status": "Token: {state}",
+    "splunk.token_set": "gespeichert",
+    "splunk.token_not_set": "nicht gesetzt",
+    "splunk.source_label": "Quelle: {source}",
+    "splunk.source.settings": "in der Oberfläche gespeichert",
+    "splunk.source.env": "Umgebungsvariablen",
+    "splunk.source.none": "nicht eingerichtet",
+    "splunk.save": "Verbindung speichern",
+    "splunk.saved": "Splunk-Verbindung gespeichert",
+    "splunk.test": "Verbindung testen",
+    "splunk.testing": "Test läuft …",
+    "splunk.test_ok": "Verbindung erfolgreich",
+    "splunk.test_failed": "Verbindung fehlgeschlagen",
+    "splunk.test_hint": "Der Test sendet ein Testereignis über die gespeicherte Verbindung; vorher speichern."
   };
 
   var en = {
@@ -788,7 +817,35 @@
     "audit.last_error": "Last error",
     "audit.none": "none",
     "audit.local_note": "Every action is also written to the local audit log. Numbers are since the server start.",
-    "audit.local_note_count": "Every action is also written to the local audit log ({n} events). Numbers are since the server start."
+    "audit.local_note_count": "Every action is also written to the local audit log ({n} events). Numbers are since the server start.",
+
+    "splunk.title": "Splunk connection (HEC)",
+    "splunk.precedence_hint": "The setting stored here wins over the MYDEMOTICKET_HEC_* environment variables. The token is never shown.",
+    "splunk.url": "HEC URL",
+    "splunk.url_placeholder": "https://splunk.example.invalid:8088",
+    "splunk.index": "Index",
+    "splunk.index_placeholder": "e.g. mydemoticket_audit",
+    "splunk.token": "HEC token",
+    "splunk.token_keep": "leave empty = keep the stored token",
+    "splunk.token_empty": "no token stored yet",
+    "splunk.clear_token": "Clear the stored token",
+    "splunk.verify": "Verify TLS certificate",
+    "splunk.enabled": "Forwarding to Splunk enabled",
+    "splunk.state": "Current state",
+    "splunk.token_status": "Token: {state}",
+    "splunk.token_set": "stored",
+    "splunk.token_not_set": "not set",
+    "splunk.source_label": "Source: {source}",
+    "splunk.source.settings": "stored in the UI",
+    "splunk.source.env": "environment variables",
+    "splunk.source.none": "not configured",
+    "splunk.save": "Save connection",
+    "splunk.saved": "Splunk connection saved",
+    "splunk.test": "Test connection",
+    "splunk.testing": "Testing...",
+    "splunk.test_ok": "Connection successful",
+    "splunk.test_failed": "Connection failed",
+    "splunk.test_hint": "The test sends one test event over the stored connection; save first."
   };
 
   var STORAGE_KEY = "mdt.language";

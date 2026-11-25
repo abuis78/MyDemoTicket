@@ -1501,12 +1501,88 @@
   }
 
   // ----------------------------------------------------------- audit / splunk
+  // Splunk HEC connection (platform admins, splunk.manage). The token is write-only: the API never returns it.
+  function splunkPanel() {
+    var box = h("div", { class: "panel-body" }, h("p", { class: "muted", text: t("common.loading") }));
+    api("GET", "/settings/splunk").then(function (s) {
+      clear(box);
+      box.appendChild(splunkForm(s || {}));
+    }).catch(function (err) {
+      clear(box);
+      box.appendChild(h("p", { class: "error", text: errorText(err) }));
+    });
+    return h("div", { class: "panel" },
+      h("div", { class: "panel-head" }, h("h2", { text: t("splunk.title") })), box);
+  }
+
+  function checkField(input, text) {
+    return h("div", null, h("label", { class: "check", for: input.id }, input, text));
+  }
+
+  function splunkForm(s) {
+    var url = h("input", { id: "sp-url", type: "url", value: s.hec_url || "", placeholder: t("splunk.url_placeholder") });
+    var index = h("input", { id: "sp-index", value: s.index || "", placeholder: t("splunk.index_placeholder") });
+    var token = h("input", { id: "sp-token", type: "password", autocomplete: "new-password",
+      placeholder: s.token_set ? t("splunk.token_keep") : t("splunk.token_empty") });
+    var clearToken = h("input", { id: "sp-clear", type: "checkbox", disabled: !s.token_set });
+    clearToken.addEventListener("change", function () {
+      token.disabled = clearToken.checked;
+      if (clearToken.checked) token.value = "";
+    });
+    var verify = h("input", { id: "sp-verify", type: "checkbox", checked: s.verify_tls !== false });
+    var enabled = h("input", { id: "sp-enabled", type: "checkbox", checked: !!s.enabled });
+    var result = h("div", { class: "wide", role: "status", "aria-live": "polite" });
+    var testBtn = h("button", {
+      type: "button", onclick: function () {
+        testBtn.disabled = true;
+        result.className = "wide muted";
+        result.textContent = t("splunk.testing");
+        api("POST", "/settings/splunk/test", {}).then(function (r) {
+          result.className = "wide " + (r && r.ok ? "ok-text" : "error");
+          result.textContent = t(r && r.ok ? "splunk.test_ok" : "splunk.test_failed") +
+            (r && r.message ? ": " + r.message : "");
+        }).catch(function (err) {
+          result.className = "wide error";
+          result.textContent = t("splunk.test_failed") + ": " + errorText(err);
+        }).then(function () { testBtn.disabled = false; });
+      }
+    }, t("splunk.test"));
+    var source = s.source || "none";
+    return h("form", {
+      class: "form-grid", onsubmit: function (ev) {
+        ev.preventDefault();
+        var body = { hec_url: url.value.trim(), index: index.value.trim(), verify_tls: verify.checked,
+          enabled: enabled.checked };
+        if (clearToken.checked) body.token = "";
+        else if (token.value) body.token = token.value; // empty field = keep the stored token
+        api("PUT", "/settings/splunk", body).then(function () {
+          toast(t("splunk.saved"));
+          viewAudit();
+        }).catch(fail);
+      }
+    },
+      h("p", { class: "wide muted", text: t("splunk.precedence_hint") }),
+      field(t("splunk.url"), url), field(t("splunk.index"), index),
+      field(t("splunk.token"), token),
+      h("div", null, h("label", { text: t("splunk.state") }),
+        h("div", { id: "sp-token-state", text: t("splunk.token_status", {
+          state: s.token_set ? t("splunk.token_set") : t("splunk.token_not_set") }) }),
+        h("div", { id: "sp-source", class: "muted", text: t("splunk.source_label", { source: label("splunk.source.", source) }) })),
+      checkField(clearToken, t("splunk.clear_token")),
+      checkField(verify, t("splunk.verify")),
+      checkField(enabled, t("splunk.enabled")),
+      h("div", { class: "wide actions" },
+        h("button", { class: "primary", type: "submit" }, t("splunk.save")), testBtn),
+      h("p", { class: "wide muted", text: t("splunk.test_hint") }),
+      result);
+  }
+
   function viewAudit() {
     var body = h("div", { class: "panel-body", "aria-live": "polite" }, h("p", { class: "muted", text: t("common.loading") }));
     render(h("div", { class: "panel" },
       h("div", { class: "panel-head" }, h("h1", { text: t("audit.title") }), h("span", { class: "spacer" }),
         h("button", { type: "button", onclick: viewAudit }, t("common.refresh"))),
-      body));
+      body), can("splunk.manage") ? splunkPanel() : null);
     api("GET", "/audit/status").then(function (s) {
       clear(body);
       function num(v) { return v === null || v === undefined ? "-" : v; }

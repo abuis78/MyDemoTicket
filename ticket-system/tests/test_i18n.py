@@ -105,11 +105,11 @@ class I18nDictionaryTest(unittest.TestCase):
         offenders = []
         for match in re.finditer(r'"((?:[^"\\]|\\.)*)"', self.app):
             text = match.group(1)
-            before = self.app[max(0, match.start() - 12):match.start()]
+            before = self.app[max(0, match.start() - 14):match.start()]
             after = self.app[match.end():match.end() + 3]
             if text in allowed or "://" in text:
                 continue
-            if re.search(r"(class|type|role|autocomplete|id|for):\s*$", before):
+            if re.search(r"(class|type|role|autocomplete|id|for):\s*$", before) or re.search(r"className = $", before):
                 continue  # attribute values, not texts
             if re.search(r"(===|!==)\s*$", before) or re.match(r"\s*:", after):
                 continue  # comparisons with / keys of server messages
