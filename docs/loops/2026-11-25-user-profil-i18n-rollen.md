@@ -1,5 +1,5 @@
 Versuch: 3/5
-Punkte: 8/9
+Punkte: 9/9
 
 # Loop-Protokoll: Benutzerverwaltung, Profil, DE/EN, Rollenverwaltung, Splunk-Verbindung (MyDemoTicket)
 
@@ -43,7 +43,7 @@ Ausgelegte Spec (verbindlich für die Agenten):
 | 6 | Splunk-Verbindung in Audit / Splunk anlegbar und testbar, Token nie ausgegeben | Tests | BESTANDEN (Versuch 1) |
 | 7 | Alle Tests grün (ticket-system, soar-app, mcp-server, e2e, deploy) | Erfolgszeilen im Volloutput | BESTANDEN (Versuch 1) |
 | 8 | Live auf https://ticket.soc-games.com deployt und geprüft | Health-Version + Live-Prüfungen im Protokoll | BESTANDEN (Versuch 2): Health {"status": "ok", "version": "1.1.0"}, /static/i18n.js 200 text/javascript, Startseite lädt i18n.js |
-| 9 | Kein Secret im Diff; Protokoll vollständig; jedes externe Werkzeug vermerkt | Protokoll + Diff | Versuch 2 NICHT BESTANDEN (Protokoll unvollständig), in Versuch 3 nachgebessert; kein Secret im Diff |
+| 9 | Kein Secret im Diff; Protokoll vollständig; jedes externe Werkzeug vermerkt | Protokoll + Diff | BESTANDEN (Versuch 3); in Versuch 2 NICHT BESTANDEN wegen unvollständigem Protokoll; kein Secret im Diff |
 
 ## Antworten auf Vorab-Fragen
 - Keine Vorab-Fragen.
@@ -158,10 +158,13 @@ Alle Schritte vom Orchestrator am 2026-11-25, außer wo anders vermerkt. Details
 
 ## Versuch 3
 - Protokoll nachgebessert (Kopf, Checkliste, Urteil, Aufwand, Werkzeugliste).
-- Inspektor prüft Punkt 9 erneut (Ergebnis folgt).
+- Inspektor (sonnet/medium) Punkt 9: BESTANDEN – Diff-Scan ohne echtes Secret (nur Test-Fixtures/UI-Texte), alle Pflichtabschnitte und externen Werkzeuge belegt; verbleibend nur kosmetisch (Zeitspalte „–“).
+- Orchestrator: git push docs/loop-user-profile-end und gh pr create/merge für diese Protokoll-Commits (83def56, ca95b45 und Abschluss).
 
 ## Braucht Andreas
 1. Admin-Passwort im Keychain: Andreas hat den Eintrag aktualisiert, Login damit ergab 401. Bitte erneut korrekt eintragen oder in der UI neu setzen.
 2. UI im Browser ansehen (Profil, Sprache, Rollen).
 3. Zwei deaktivierte Test-User loopcheck_admin_6634c3 / loopcheck_user_6634c3 im Mandanten soc-games bleiben stehen (User-Löschen gibt es nicht). Empfehlung: so lassen.
 4. Lokale squash-gemergte Branches feature/user-profile-i18n-roles(-ui) nicht gelöscht (`-d` verweigert, `-D` verboten). Empfehlung: Andreas löscht sie bei Gelegenheit selbst.
+
+LOOP-ENDE: BESTANDEN
