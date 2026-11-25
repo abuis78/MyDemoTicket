@@ -1,5 +1,5 @@
-Versuch: 2/5
-Punkte: 7/9
+Versuch: 3/5
+Punkte: 8/9
 
 # Loop-Protokoll: Benutzerverwaltung, Profil, DE/EN, Rollenverwaltung, Splunk-Verbindung (MyDemoTicket)
 
@@ -42,8 +42,8 @@ Ausgelegte Spec (verbindlich für die Agenten):
 | 5 | Rollenverwaltung inkl. Analysten-Rollen, nur Analysten-Rechte vergebbar, serverseitig erzwungen | Tests | BESTANDEN (Versuch 1) |
 | 6 | Splunk-Verbindung in Audit / Splunk anlegbar und testbar, Token nie ausgegeben | Tests | BESTANDEN (Versuch 1) |
 | 7 | Alle Tests grün (ticket-system, soar-app, mcp-server, e2e, deploy) | Erfolgszeilen im Volloutput | BESTANDEN (Versuch 1) |
-| 8 | Live auf https://ticket.soc-games.com deployt und geprüft | Health-Version + Live-Prüfungen im Protokoll | ausstehend (Deploy) |
-| 9 | Kein Secret im Diff; Protokoll vollständig; jedes externe Werkzeug vermerkt | Protokoll + Diff | offen (Protokoll wird nach Deploy vervollständigt; kein Secret im Diff) |
+| 8 | Live auf https://ticket.soc-games.com deployt und geprüft | Health-Version + Live-Prüfungen im Protokoll | BESTANDEN (Versuch 2): Health {"status": "ok", "version": "1.1.0"}, /static/i18n.js 200 text/javascript, Startseite lädt i18n.js |
+| 9 | Kein Secret im Diff; Protokoll vollständig; jedes externe Werkzeug vermerkt | Protokoll + Diff | Versuch 2 NICHT BESTANDEN (Protokoll unvollständig), in Versuch 3 nachgebessert; kein Secret im Diff |
 
 ## Antworten auf Vorab-Fragen
 - Keine Vorab-Fragen.
@@ -54,11 +54,14 @@ Ausgelegte Spec (verbindlich für die Agenten):
 - Versuch 1 · Protokoll-Agent: model haiku, effort low – mechanisch.
 - Versuch 1 · Agent A (Backend): effort medium – Bauen nach Spec/Vertrag.
 - Versuch 1 · Agent B (UI): effort medium – Bauen nach Spec/Vertrag.
-- Agent C Integration (UI gegen echten Server): effort medium.
+- Versuch 1 · Agent C (Integration, UI gegen echten Server): effort medium.
 - Inspektor Versuch 1: model sonnet, effort medium.
 - Protokoll-Nachtrag (dieser Eintrag): model haiku, effort medium. Hochgestuft von low, weil der Inspektor im vorherigen Loop den Protokollpunkt bei low nicht bestanden hat. Regel aus Loop 2026-11-24 übernommen: eine Stufe hoch, nie herunter.
 - Versuch 2 · Protokoll-Agent: model haiku, effort medium.
-- Versuch 2 · Inspektor: model sonnet, effort medium.
+- Versuch 2 · Inspektor: model sonnet, effort medium – Urteil: 8 BESTANDEN, 9 NICHT BESTANDEN.
+- Versuch 2 · Orchestrator (Merge, Backup, Deploy, Reboot, Live-Prüfung, Aufräumen): eigene Sitzung, Aufwand nicht verstellt (bleibt bei Andreas).
+- Versuch 3 · Protokoll-Agent: model haiku, effort high – HOCHGESTUFT von medium, weil der Inspektor Punkt 9 (Protokoll) in Versuch 2 durchfallen ließ.
+- Versuch 3 · Inspektor: model sonnet, effort medium.
 
 ## Annahmen
 1. Default-Sprache für bestehende und neue User ist „de“, weil Andreas Deutsch nutzt. Die Login-Seite nimmt localStorage bzw. die Browsersprache.
@@ -92,13 +95,15 @@ Nachtrag „User anlegen klappt nicht“:
 | – | Orchestrator | Bash git push (Protokoll-Commit 56fa2c7) | GitHub (origin) | Protokoll-Stand veröffentlichen |
 | – | Orchestrator | Bash gh pr merge 18 --squash | GitHub | PR #18 squash-merged nach main 4e7c57b |
 | – | Orchestrator | Bash git push origin --delete feature/user-profile-i18n-roles | GitHub (origin) | Remote-Feature-Branch löschen. Lokale Branches nicht gelöscht (squash-gemergt, `git branch -d` verweigert; -D verboten) |
-| – | Orchestrator | Bash (Worktree entfernen) | lokal | UI-Worktree /Users/abuis/git/MyDemoTicket-ui entfernt |
+| – | Orchestrator | Bash `git worktree remove /Users/abuis/git/MyDemoTicket-ui` | lokal (nicht extern) | UI-Worktree /Users/abuis/git/MyDemoTicket-ui entfernt |
 | – | Orchestrator | AWS SSM via deploy/aws/backup.sh | i-0d33324e98981cda8 | Backup vor Deploy. Ergebnis: "backup ok: /var/lib/mydemoticket.bak-20261125T070825Z" |
 | – | Orchestrator | Bash deploy/aws/deploy.sh (S3-Bundle 95434 Bytes bei 4e7c57b, SSM-Parameter) | AWS S3 / SSM, i-0d33324e98981cda8 | Deploy von 4e7c57b |
 | – | Orchestrator | Bash aws ec2 reboot-instances --instance-ids i-0d33324e98981cda8 | AWS EC2 | Neustart, damit 1.1.0 läuft |
 | – | Orchestrator | Bash curl https://ticket.soc-games.com/api/v1/health | ticket.soc-games.com | Health nach Deploy: {"status": "ok", "version": "1.1.0"} |
 | – | Orchestrator | Bash Scratchpad live110.py (Python urllib, Admin-API-Token aus Keychain, nicht ausgegeben) | https://ticket.soc-games.com | Live-Prüfung: "LIVE: 17/17 passed". Ein erster Lauf scheiterte am Skript (fehlendes "tenant" → 400), dabei nichts angelegt |
-| – | Orchestrator | Bash (Live-API) | ticket.soc-games.com | Zwei temporäre Test-User deaktiviert (loopcheck_admin_6634c3, loopcheck_user_6634c3) |
+| – | Orchestrator | python3 live110.py (urllib) gegen https://ticket.soc-games.com/api/v1, Admin-API-Token aus Keychain; Deaktivierung der Test-User erfolgt im Skript selbst (PATCH active=false) | ticket.soc-games.com | Zwei temporäre Test-User deaktiviert (loopcheck_admin_6634c3, loopcheck_user_6634c3) |
+| – | Keychain (macOS `security find-generic-password`), lokal, Orchestrator | admin-password (Login-Prüfung 06:55 und nach Andreas' Aktualisierung → 401), admin-token (Live-Skript); Werte nie ausgegeben | lokal | Zugangsdaten für Login und Live-Prüfung |
+| – | Inspektor Versuch 2 | Bash curl: /api/v1/health, /static/i18n.js, Startseite | ticket.soc-games.com | Prüfung Versuch 2 (lesend) |
 
 ## Versuch 1
 - Agent A (Backend), Commits: 2cf2823, c4ab9e4, 8fcd2f7, 13eec9d, e137744, b650759.
@@ -133,9 +138,9 @@ Alle Schritte vom Orchestrator am 2026-11-25, außer wo anders vermerkt. Details
   - `/me` mit language, theme, timezone, permissions
   - `/roles` mit analyst_l1, analyst_l2, soc_lead, read_only
   - `/permissions`: 8 vergebbar
-  - `/settings/splunk` ohne Token (source=env, token_set)
-  - Mandant audi: 17 Tickets nach Migration v4
-  - audit/status: HEC failed 0
+  - `/settings/splunk`: Antwort ohne Token-Feld, token_set=true (Info-Ausgabe source=env)
+  - Mandant audi: total >= 16 geprüft, gemeldet 17 (nach Migration v4)
+  - audit/status: HTTP 200 (Info-Ausgabe failed=0)
   - `/static/i18n.js` ausgeliefert
   - Original-Bug: temporärer Admin setzt eigenes Passwort, legt danach in derselben Sitzung einen User an → 201
   - `PATCH /me`
@@ -144,6 +149,19 @@ Alle Schritte vom Orchestrator am 2026-11-25, außer wo anders vermerkt. Details
 - Aufräumen: die zwei temporären Test-User loopcheck_admin_6634c3 und loopcheck_user_6634c3 deaktiviert (Löschen von Usern gibt es nicht).
 - Ein erster Lauf scheiterte am Skript (fehlendes "tenant" beim Anlegen durch platform_admin → 400). Dabei wurde nichts angelegt.
 
+## Urteil Inspektor Versuch 2
+| # | Ergebnis | Nachweis |
+|---|---|---|
+| 7 | BESTANDEN (Stichprobe) | `git diff 39530bd 4e7c57b --stat` nur Protokolldatei |
+| 8 | BESTANDEN | curl health 1.1.0; i18n.js "200 text/javascript; charset=utf-8"; `grep -c i18n.js` = 1; Schreib-Checks von live110.py nur gelesen, 17 Checks plausibel |
+| 9 | NICHT BESTANDEN | Formfehler im Protokoll: Kopf, Checkliste, fehlendes Urteil, Aufwand, Werkzeugliste. Kein Secret im Diff |
+
+## Versuch 3
+- Protokoll nachgebessert (Kopf, Checkliste, Urteil, Aufwand, Werkzeugliste).
+- Inspektor prüft Punkt 9 erneut (Ergebnis folgt).
+
 ## Braucht Andreas
-1. Das Admin-Passwort wurde um 06:46 in der UI geändert. Der Keychain-Eintrag mydemoticket/admin-password ist vermutlich veraltet. Empfehlung: Eintrag mit dem neuen Passwort aktualisieren.
-2. Bitte die UI im Browser ansehen (Profil, Sprache, Rollen).
+1. Admin-Passwort im Keychain: Andreas hat den Eintrag aktualisiert, Login damit ergab 401. Bitte erneut korrekt eintragen oder in der UI neu setzen.
+2. UI im Browser ansehen (Profil, Sprache, Rollen).
+3. Zwei deaktivierte Test-User loopcheck_admin_6634c3 / loopcheck_user_6634c3 im Mandanten soc-games bleiben stehen (User-Löschen gibt es nicht). Empfehlung: so lassen.
+4. Lokale squash-gemergte Branches feature/user-profile-i18n-roles(-ui) nicht gelöscht (`-d` verweigert, `-D` verboten). Empfehlung: Andreas löscht sie bei Gelegenheit selbst.
