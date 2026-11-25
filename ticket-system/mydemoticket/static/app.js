@@ -393,6 +393,7 @@
     if (r.path === "/new") { nav = "new"; viewNew(); }
     else if ((m = r.path.match(/^\/tickets\/([^/]+)$/))) { nav = ""; viewDetail(decodeURIComponent(m[1])); }
     else if (r.path === "/admin/users") { nav = "users"; viewUsers(); }
+    else if (r.path === "/admin/roles") { nav = "roles"; viewRoles(); }
     else if (r.path === "/admin/teams") { nav = "teams"; viewTeams(); }
     else if (r.path === "/admin/custom-fields") { nav = "custom-fields"; viewFields(); }
     else if (r.path === "/admin/webhooks") { nav = "webhooks"; viewWebhooks(); }
@@ -1122,6 +1123,99 @@
         .concat([t("users.teams"), t("users.status"), ""]);
       render(adminPanel(t("users.title"),
         form, h("div", null, secretBox, table(headers, rows))));
+    }).catch(fail);
+  }
+
+  // ------------------------------------------------------------------ roles
+  function permLabel(p) { return label("perm.", p); }
+
+  function roleDescription(r) {
+    return r.builtin && I18N.has("roles.desc." + r.name) ? t("roles.desc." + r.name) : (r.description || "");
+  }
+
+  // Create (role = null) or edit form of a custom role; only grantable permissions get a checkbox.
+  function roleForm(role, grantable, onCancel) {
+    var prefix = role ? "re-" : "rn-";
+    var name = h("input", { id: prefix + "name", required: true, pattern: "[a-z][a-z0-9_]{1,31}", maxlength: 32,
+      value: role ? role.name : "", disabled: !!role, placeholder: t("roles.name_placeholder"),
+      "aria-describedby": prefix + "name-hint" });
+    var labelInput = h("input", { id: prefix + "label", required: true, maxlength: 100, value: role ? role.label || "" : "" });
+    var desc = h("input", { id: prefix + "desc", maxlength: 500, value: role ? role.description || "" : "" });
+    var boxes = grantable.map(function (p) {
+      return h("input", { type: "checkbox", id: prefix + "perm-" + p.replace(/\./g, "-"), value: p,
+        checked: !!role && role.permissions.indexOf(p) >= 0 });
+    });
+    var form = h("form", {
+      class: "panel-body form-grid", onsubmit: function (ev) {
+        ev.preventDefault();
+        var perms = boxes.filter(function (b) { return b.checked; }).map(function (b) { return b.value; });
+        var body = { label: labelInput.value.trim(), description: desc.value.trim(), permissions: perms };
+        var req = role ? api("PATCH", "/roles/" + encodeURIComponent(role.name), body)
+          : api("POST", "/roles", Object.assign({ name: name.value.trim() }, body));
+        req.then(function () {
+          toast(t(role ? "roles.saved" : "roles.created", { name: role ? role.name : name.value.trim() }));
+          viewRoles();
+        }).catch(fail);
+      }
+    },
+      field(t("roles.name"), name, { required: true }), field(t("roles.label"), labelInput, { required: true }),
+      field(t("roles.description"), desc, { wide: true }),
+      h("div", { class: "wide muted", id: prefix + "name-hint", text: t("roles.name_hint") }),
+      h("div", { class: "wide", role: "group", "aria-labelledby": prefix + "perms-title" },
+        h("label", { id: prefix + "perms-title", text: t("roles.permissions") }),
+        h("div", { class: "checks" }, boxes.map(function (b) {
+          return h("label", { class: "check", for: b.id }, b, permLabel(b.value));
+        })),
+        h("p", { class: "muted", text: t("roles.grantable_hint") })),
+      h("div", { class: "wide actions" },
+        h("button", { class: "primary", type: "submit" }, role ? t("common.save") : t("roles.create")),
+        onCancel ? h("button", { type: "button", onclick: onCancel }, t("common.cancel")) : null));
+    return form;
+  }
+
+  function viewRoles() {
+    if (!can("roles.manage")) { render(h("p", { class: "error", text: t("roles.only_admins") })); return; }
+    Promise.all([api("GET", "/roles"), api("GET", "/permissions")]).then(function (res) {
+      var roles = res[0] || [];
+      session.roles = roles;
+      var grantable = (res[1] || []).filter(function (p) { return p.grantable; }).map(function (p) { return p.name; });
+      var editBox = h("div");
+      function edit(r) {
+        clear(editBox);
+        var form = roleForm(r, grantable, function () { clear(editBox); });
+        editBox.appendChild(h("div", { class: "panel" },
+          h("div", { class: "panel-head" }, h("h2", { text: t("roles.edit_title", { name: r.name }) })), form));
+        form.querySelector("input:not([disabled])").focus();
+      }
+      var rows = roles.map(function (r) {
+        return h("tr", null,
+          h("td", { class: "mono", text: r.name }),
+          h("td", { text: r.builtin ? roleLabel(r.name) : (r.label || r.name) }),
+          h("td", { text: roleDescription(r) }),
+          h("td", { text: r.builtin ? t("roles.builtin") : t("roles.custom") }),
+          h("td", { text: r.permissions.length ? r.permissions.map(permLabel).join(", ") : t("roles.none") }),
+          h("td", { text: String(r.users == null ? "" : r.users) }),
+          h("td", { class: "actions" }, r.builtin ? h("span", { class: "muted", text: t("roles.read_only") }) : [
+            h("button", { type: "button", "aria-label": t("roles.edit_aria", { name: r.name }),
+              onclick: function () { edit(r); } }, t("common.edit")),
+            h("button", {
+              type: "button", class: "danger", "aria-label": t("roles.delete_aria", { name: r.name }),
+              onclick: function () {
+                if (!window.confirm(t("roles.delete_confirm", { name: r.name }))) return;
+                api("DELETE", "/roles/" + encodeURIComponent(r.name)).then(function () {
+                  toast(t("roles.deleted", { name: r.name }));
+                  viewRoles();
+                }).catch(function (err) {
+                  if (err && err.status === 409) toast(t("roles.in_use", { name: r.name }), true);
+                  else fail(err);
+                });
+              }
+            }, t("common.delete"))]));
+      });
+      render(adminPanel(t("roles.title"), roleForm(null, grantable, null),
+        h("div", null, h("p", { class: "panel-body muted", text: t("roles.read_only_hint") }),
+          table([t("roles.name"), t("roles.label"), t("roles.description"), t("roles.type"), t("roles.permissions"),
+            t("roles.users"), ""], rows)), editBox));
     }).catch(fail);
   }
 
