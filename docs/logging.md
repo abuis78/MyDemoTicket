@@ -57,12 +57,14 @@ in `stats()` or in error messages.
 | `ticket.create` | Ticket created | `{"short_description": "...", "priority": ...}` |
 | `ticket.update` | Fields changed | `{"changed": ["priority", ...]}` |
 | `ticket.state_change` | State transition | **`{"from": "<old>", "to": "<new>"}`** (required by the report dashboard) |
+| `ticket.bulk_update` | `POST /tickets/bulk` (summary; each ticket also logs its own `ticket.update` / `ticket.state_change`); `outcome=failure` when no ticket succeeded | `{"count": 3, "ok": 2, "failed": 1, "changed": 2, "fields": ["priority"], "numbers": [...], "failures": [{"number": "...", "status": 403}]}` |
 | `ticket.comment` | Comment / work note added | `{"kind": "comment"}` |
 | `user.create` / `user.update` / `user.delete` | User management | `{"changed": [...]}` |
 | `token.create` / `token.revoke` | API tokens | `{"name": "..."}` (never the token value) |
 | `team.create` / `team.update` / `team.delete` | Teams | |
 | `custom_field.create` / `custom_field.update` / `custom_field.delete` | Custom fields | |
-| `webhook.create` / `webhook.delete` | Webhook configuration | `{"type": "generic", "url_host": "..."}` |
+| `webhook.create` / `webhook.update` / `webhook.delete` | Webhook configuration (`webhook.update` only from the pairing wizard) | `{"type": "generic", "url_host": "..."}`, `{"changed": ["secret"]}` |
+| `pairing.check` / `pairing.apply` | ES + SOAR pairing wizard; `outcome=failure` if a check or step failed | `{"soar_host": "...", "checks"/"steps": {"asset": "created", ...}}` (never a token) |
 | `webhook.delivery` | Outbound delivery attempt; `outcome` = `success`, `failure`, `skipped` or `error` | `{"event": "ticket.created", "status": 200, "attempt": 1}` |
 | `tenant.create` / `tenant.update` | Tenant administration | |
 

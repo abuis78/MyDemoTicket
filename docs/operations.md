@@ -196,7 +196,7 @@ index=mydemoticket sourcetype=mydemoticket:audit action=webhook.delivery outcome
 | stats count by tenant outcome details.event
 ```
 
-### Web UI for users (1.1.0)
+### Web UI for users (1.1.0, 1.2.0)
 
 | Task | Where |
 |---|---|
@@ -204,6 +204,8 @@ index=mydemoticket sourcetype=mydemoticket:audit action=webhook.delivery outcome
 | Set another user's password (entered twice), edit display name / e-mail, change role | `#/admin/users` |
 | Roles: view all, create / edit / delete custom roles (analyst permissions only) | `#/admin/roles` (admins) |
 | Splunk HEC connection: URL, index, token (write-only), TLS check, on/off, test event | `#/admin/audit` (platform admins); the saved connection wins over `MYDEMOTICKET_HEC_*` and applies without restart. Empty token field keeps the stored token |
+| Filter the ticket list by several states, priorities, groups or assignees (incl. "unassigned") | Ticket list: each filter is a checkbox dropdown; the choice is kept in the URL (bookmarkable) |
+| Change state, priority, group or assignee of many tickets at once (max. 200 per request) | Ticket list: tick rows or "select all on page", choose the change in the bulk bar; the result shows each failed ticket with its reason. Every ticket gets its own journal entry and webhook event, so SOAR and ES mirror each one |
 
 ## Troubleshooting
 

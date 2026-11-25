@@ -265,3 +265,22 @@ dialog.modal .panel-body > div { margin-bottom: 12px; }
   .form-grid { grid-template-columns: 1fr; }
   .tenant-caption { display: none; }
 }
+
+/* multi-select filters (button + checkbox panel) and bulk editing */
+.multi { position: relative; }
+.multi-button { width: 100%; min-width: 150px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.multi-button::after { content: " \25BE"; color: var(--muted); }
+.multi-panel {
+  position: absolute; z-index: 20; top: calc(100% + 2px); left: 0; min-width: 220px; max-height: 320px; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 3px; padding: 8px 10px;
+  box-shadow: 0 2px 8px rgba(0,0,0,.2);
+}
+.multi-panel label.check { margin: 3px 0; white-space: nowrap; }
+.multi-panel .actions { margin-top: 6px; border-top: 1px solid var(--row-border); padding-top: 6px; }
+.select-col { width: 28px; }
+.bulk-bar { background: var(--blue-light); border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); }
+.bulk-bar .bulk-head { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
+.bulk-bar .wide { margin-top: 8px; }
+.bulk-summary { border-bottom: 1px solid var(--border); }
+.bulk-summary p { margin: 0 0 4px; }
+.bulk-failures { margin: 0; padding-left: 18px; }

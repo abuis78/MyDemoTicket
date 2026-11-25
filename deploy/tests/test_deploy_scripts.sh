@@ -55,6 +55,7 @@ PY
   *" describe-security-groups "*"IpPermissions"*) echo 8081 ;;
   *" describe-security-groups "*) echo sg-test ;;
   *" iam get-"*|*" s3api head-bucket "*) exit 0 ;;
+  *" s3 cp "*) [ -n "${STUB_BUNDLE:-}" ] && cp "$3" "$STUB_BUNDLE"; exit 0 ;;
   *) echo None ;;
 esac
 exit 0
@@ -173,8 +174,13 @@ check "dry run names HEC parameters" grep -q '/mydemoticket/HEC_URL=https://splu
 check "dry run writes no parameter" [ -z "$(ls "$STUB_SSM")" ]
 check "dry run output does not contain the token" bash -c "! grep -qF '$FAKE_TOKEN' '$WORK/deploy-dry.out'"
 
-STUB_HEC_TOKEN="$FAKE_TOKEN" run_deploy apply ""
+STUB_BUNDLE="$WORK/bundle.tgz" STUB_HEC_TOKEN="$FAKE_TOKEN" run_deploy apply ""
 check "deploy.sh apply (stubbed) exit 0" [ "$(cat "$WORK/deploy-apply.rc")" = 0 ]
+tar -tzf "$WORK/bundle.tgz" >"$WORK/bundle.list" 2>/dev/null
+check "bundle has the package" grep -qx 'ticket-system/mydemoticket/pairing.py' "$WORK/bundle.list"
+check "bundle has the SOAR app (pairing wizard)" grep -qx 'soar-app/mydemoticket/mydemoticket.json' "$WORK/bundle.list"
+check "bundle has both playbooks" bash -c "grep -qx 'soar-playbooks/mydemoticket_es_mirror.py' '$WORK/bundle.list' && grep -qx 'soar-playbooks/mydemoticket_ticket_from_es.json' '$WORK/bundle.list'"
+check "bundle has no app tests, dist or caches" bash -c "! grep -qE '^soar-app/(tests|dist)|__pycache__' '$WORK/bundle.list'"
 check "HEC_TOKEN written as SecureString with keychain value" \
   bash -c "[ \"\$(cat '$STUB_SSM/HEC_TOKEN.type')\" = SecureString ] && [ \"\$(cat '$STUB_SSM/HEC_TOKEN')\" = '$FAKE_TOKEN' ]"
 check "HEC_URL written as String (default URL)" \
@@ -217,6 +223,9 @@ bash "$REPO/deploy/install.sh" --dry-run --root "$IROOT" >"$WORK/install-dry.out
 check "install.sh --dry-run --root exit 0" [ $? = 0 ]
 check "rendered unit: ReadWritePaths covers data dir (logs inside)" grep -qx 'ReadWritePaths=/var/lib/mydemoticket' "$IROOT/etc/systemd/system/mydemoticket.service"
 check "rendered unit reads env file" grep -qx 'EnvironmentFile=-/etc/mydemoticket/env' "$IROOT/etc/systemd/system/mydemoticket.service"
+check "install copies the SOAR app next to the package" [ -f "$IROOT/opt/mydemoticket/soar-app/mydemoticket/mydemoticket.json" ]
+check "install copies the playbooks next to the package" [ -f "$IROOT/opt/mydemoticket/soar-playbooks/mydemoticket_es_mirror.py" ]
+check "installed package finds the pairing bundle" bash -c "cd '$IROOT/opt/mydemoticket' && env -u MYDEMOTICKET_SOAR_BUNDLE_DIR python3 -c 'import os, sys, mydemoticket.pairing as p; sys.exit(0 if os.path.realpath(p.bundle_dir() or \"\") == os.path.realpath(sys.argv[1]) else 1)' '$IROOT/opt/mydemoticket'"
 printf '# managed by mydemoticket\nMYDEMOTICKET_HEC_URL=https://keep.example:8088\n' >"$IROOT/etc/mydemoticket/env"
 bash "$REPO/deploy/install.sh" --dry-run --root "$IROOT" >/dev/null 2>&1
 check "install.sh keeps an existing env file" grep -qx 'MYDEMOTICKET_HEC_URL=https://keep.example:8088' "$IROOT/etc/mydemoticket/env"

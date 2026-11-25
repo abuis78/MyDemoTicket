@@ -53,6 +53,7 @@ ROUTES = [
     ("POST", r"/settings/splunk/test", "test_splunk_settings", True),
     ("GET", r"/tickets", "list_tickets", True),
     ("POST", r"/tickets", "create_ticket", True),
+    ("POST", r"/tickets/bulk", "bulk_update_tickets", True),
     ("GET", r"/tickets/(?P<number>[^/]+)", "get_ticket", True),
     ("PATCH", r"/tickets/(?P<number>[^/]+)", "patch_ticket", True),
     ("GET", r"/tickets/(?P<number>[^/]+)/journal", "journal", True),
@@ -80,6 +81,9 @@ ROUTES = [
     ("POST", r"/webhooks", "create_webhook", True),
     ("DELETE", r"/webhooks/(?P<hook_id>\d+)", "delete_webhook", True),
     ("GET", r"/webhooks/(?P<hook_id>\d+)/deliveries", "webhook_deliveries", True),
+    ("GET", r"/pairing", "pairing_status", True),
+    ("POST", r"/pairing/check", "pairing_check", True),
+    ("POST", r"/pairing/apply", "pairing_apply", True),
 ]
 COMPILED = [(m, re.compile("^/api/v1" + p + "/?$"), h, a) for m, p, h, a in ROUTES]
 
@@ -98,7 +102,8 @@ class RequestContext:
     def __init__(self, principal, query, body, source, headers, tenant=None, request_id=None, ip=None,
                  method=None, path=None):
         self.principal = principal
-        self.query = query
+        self.query = query            # last value per parameter
+        self.query_all = {}           # every value per parameter (repeated ?a=1&a=2)
         self.body = body
         self.source = source
         self.headers = headers
@@ -326,7 +331,9 @@ class Handler(BaseHTTPRequestHandler):
             if principal is not None:
                 ctx.tenant = resolve_tenant(self.app.db, principal, self.headers.get(TENANT_HEADER))
             ctx.body = self._read_body() if self.command in ("POST", "PATCH", "PUT") else {}
-            ctx.query = {k: v[-1] for k, v in urllib.parse.parse_qs(parsed.query, keep_blank_values=True).items()}
+            parsed_query = urllib.parse.parse_qs(parsed.query, keep_blank_values=True)
+            ctx.query = {k: v[-1] for k, v in parsed_query.items()}
+            ctx.query_all = parsed_query
             if handler == "_login":
                 return self._login(ctx)
             if handler == "_logout":

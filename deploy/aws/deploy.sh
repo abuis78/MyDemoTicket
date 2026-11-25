@@ -220,7 +220,10 @@ if ! aws s3api head-bucket --bucket "$BUCKET" >/dev/null 2>&1; then
     BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
 fi
 BUNDLE=$(mktemp)
-COPYFILE_DISABLE=1 tar --exclude=__pycache__ -czf "$BUNDLE" -C "$ROOT" ticket-system/mydemoticket deploy
+# soar-app/mydemoticket + soar-playbooks: bundle of the pairing wizard (#/admin/pairing), copied next to the
+# package by deploy/install.sh
+COPYFILE_DISABLE=1 tar --exclude=__pycache__ -czf "$BUNDLE" -C "$ROOT" ticket-system/mydemoticket deploy \
+  soar-app/mydemoticket soar-playbooks
 aws s3 cp "$BUNDLE" "s3://$BUCKET/bundle.tgz" >/dev/null
 say "uploaded code bundle ($(wc -c <"$BUNDLE" | tr -d ' ') bytes) at $(git -C "$ROOT" rev-parse --short HEAD)"
 rm -f "$BUNDLE"

@@ -26,7 +26,7 @@ Claude Code / Claude Desktop and installers for a Linux server or AWS EC2.
 | SOAR app | 10 actions incl. `on poll` (`soar-app/`) |
 | SOAR playbooks | `mydemoticket_es_mirror` (ticket → ES status and notes), `mydemoticket_ticket_from_es` (ES notable → ticket) (`soar-playbooks/`) |
 | MCP server | Claude Code / Claude Desktop tools for tickets, journals, reports (`mcp-server/`) |
-| Web UI | German and English; ticket list and filters, ticket detail with tabs (Work notes, Comments, Resolution report, Audit trail, History), own profile (click on your name: display name, e-mail, password, time zone, light/dark theme, language), admin pages for users, roles, teams, custom fields, webhooks, audit status with the Splunk HEC connection, and tenants |
+| Web UI | German and English; ticket list with multi-select filters and bulk editing (state, priority, group, assignee for many tickets at once), ticket detail with tabs (Work notes, Comments, Resolution report, Audit trail, History), own profile (click on your name: display name, e-mail, password, time zone, light/dark theme, language), admin pages for users, roles, teams, custom fields, webhooks, audit status with the Splunk HEC connection, and tenants |
 
 ## Architecture
 
@@ -144,9 +144,9 @@ cover a real SOAR or ES instance or the browser UI itself.
 
 | Component | Version | Where |
 |---|---|---|
-| Ticket system | 1.0.0 | `ticket-system/mydemoticket/__init__.py` (`GET /api/v1/health`) |
+| Ticket system | 1.2.0 | `ticket-system/mydemoticket/__init__.py` (`GET /api/v1/health`) |
 | REST API | v1 | `/api/v1` |
-| Database schema | 3 | `PRAGMA user_version`, migrations in `ticket-system/mydemoticket/db.py` |
+| Database schema | 4 | `PRAGMA user_version`, migrations in `ticket-system/mydemoticket/db.py` |
 | SOAR app | 1.2.0 | `soar-app/mydemoticket/mydemoticket.json` (`app_version`) |
 | MCP server | 1.0.0 | `mcp-server/mydemoticket_mcp/__init__.py` |
 

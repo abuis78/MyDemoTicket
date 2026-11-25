@@ -139,13 +139,14 @@ Since 1.1.0 every check is a permission check. `GET /me` returns the caller's
 | `webhooks.manage` | no | `/webhooks` |
 | `tenants.manage` | no | `/tenants` |
 | `splunk.manage` | no | `/settings/splunk` |
+| `pairing.manage` | no | `/pairing` (ES + SOAR pairing wizard) |
 
 Built-in role → permissions:
 
 | Role | Permissions |
 |---|---|
 | `platform_admin` | all |
-| `admin` | all except `tenants.manage`, `splunk.manage` |
+| `admin` | all except `tenants.manage`, `splunk.manage` (so including `pairing.manage`) |
 | `agent` | `tickets.read_all`, `tickets.create`, `tickets.update_own`, `tickets.comment`, `tickets.work_note`, `tickets.close`, `reports.view` |
 | `integration` | `tickets.read_all`, `tickets.create`, `tickets.update_all`, `tickets.comment`, `tickets.work_note`, `tickets.close`, `reports.view` |
 | `requester` | `tickets.create`, `tickets.comment` (self-service) |
@@ -246,7 +247,7 @@ A new login starts in `soc-games` again.
 
 ```bash
 curl -s $MDT/health
-# {"status": "ok", "version": "1.1.0"}
+# {"status": "ok", "version": "1.2.0"}
 ```
 
 ### `GET /me`
@@ -306,21 +307,31 @@ Every non-GET request authenticated by the session cookie must send `X-CSRF-Toke
 
 | Query | Meaning |
 |---|---|
-| `state` | one state or comma list, e.g. `new,in_progress` |
-| `assignment_group` | team name; empty value = unassigned group |
-| `assigned_to` | username; empty value = unassigned |
-| `caller` | username |
-| `priority` | 1–4 |
+| `state` | one or more states, e.g. `new,in_progress` |
+| `priority` | one or more of 1–4, e.g. `1,2` |
+| `assignment_group` | one or more team names; `-` (or `null`, or an empty value) = no group |
+| `assigned_to` | one or more usernames; `-` (or `null`, or an empty value) = unassigned |
+| `caller` | one or more usernames |
 | `updated_since` | ISO-8601; returns tickets with `updated_at >= value` |
 | `q` | substring search in number, short description, description |
 | `external_ref.<key>` | exact match on `external_refs.<key>`; `<key>` must match `[a-z0-9_]{1,64}` (else `422`). The stored scalar is compared as text: a stored number `1133` matches `1133`, booleans match `true`/`false`. Several `external_ref.*` parameters are combined with AND, and with all other filters. |
 | `sort` | `-updated_at` (default), `updated_at`, `number`, `-number`, `priority`, `-priority` |
 | `limit` / `offset` | paging, `limit` 1–500 (default 50) |
 
+**Several values per filter (since 1.2.0):** give them comma-separated
+(`priority=1,2`), as repeated parameters (`priority=1&priority=2`) or both. Values of
+one filter are combined with OR, different filters with AND. A single value works as
+before. A team name that itself contains a comma matches as a whole
+(`assignment_group=Red%2C%20Blue`); several such teams go in repeated parameters.
+
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" \
   "$MDT/tickets?state=new,in_progress&assignment_group=SOC%20L1&updated_since=2026-11-24T00:00:00Z&limit=20"
 # {"items": [ticket, ...], "total": 3}
+
+# priority 1 or 2, in SOC L1 or without group, assigned to analyst1 or nobody
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$MDT/tickets?priority=1,2&assignment_group=SOC%20L1&assignment_group=-&assigned_to=analyst1,-"
 ```
 
 As everywhere, only tickets of the request's tenant are returned (requesters: only their own).
@@ -381,6 +392,40 @@ curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application
        "custom_fields": {"risk_score": 10}}' \
   $MDT/tickets/TKT0001001
 ```
+
+### `POST /tickets/bulk` → `200` result per ticket
+
+The same change for up to **200** tickets. Each ticket goes through exactly the
+code path of `PATCH /tickets/{number}`: permissions per ticket (incl.
+`tickets.close` for `resolved` / `closed` / `cancelled`), state transitions,
+required `close_notes` for `resolved`, journal entries, audit events and **one
+webhook event per changed ticket** (so the SOAR / ES mirror fires for every
+ticket). `X-MyDemoTicket-Source` works as for `PATCH` (e.g. `soar` → SOAR
+webhooks skip the event). A failing ticket does not stop the others.
+
+| Body field | Meaning |
+|---|---|
+| `numbers` | list of ticket numbers (or ids), 1–200; duplicates are ignored |
+| `changes` | object with any of `state`, `priority`, `assignment_group`, `assigned_to` (`null` = unassign), `close_notes` |
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"numbers": ["TKT0001001", "TKT0001002", "TKT0001003"],
+       "changes": {"state": "resolved", "close_notes": "False positive (bulk)"}}' \
+  $MDT/tickets/bulk
+# {"results": [
+#   {"number": "TKT0001001", "ok": true,  "status": 200, "changed": true},
+#   {"number": "TKT0001002", "ok": false, "status": 409, "error": "transition closed -> resolved is not allowed"},
+#   {"number": "TKT0001003", "ok": false, "status": 403, "error": "ticket is assigned to another team or user"}]}
+```
+
+`status` / `error` per ticket are what a single `PATCH` would have answered
+(`403`, `404`, `409`, `422`). `changed: false` = the ticket already had these
+values (no journal entry, no event). The request itself fails with `422` only for
+a malformed body (no or more than 200 numbers, empty `changes`, a field other than
+the five above). Audit: one summary event `ticket.bulk_update` plus the normal
+per-ticket events (`ticket.update` / `ticket.state_change`, `access.denied` for
+`403`).
 
 ### `GET /tickets/{number}/journal` → array
 
@@ -548,6 +593,38 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" $MDT/settings/splunk/test
 
 The token is stored in the `settings` table of the database (data directory, mode
 0700), because it is needed to send events.
+
+## ES + SOAR pairing (admin: `pairing.manage`)
+
+Connects the tenant of the request to Splunk SOAR (see
+[installation.md – Pairing via wizard](installation.md#pairing-via-wizard)). The SOAR token
+(`soar_token`, a `ph-auth-token`) is sent with every check/apply, used only for the SOAR calls of
+that request and stored only as the secret of the `soar` webhook. No response, log line or audit
+event contains it or the integration token.
+
+| Endpoint | Body / result |
+|---|---|
+| `GET /pairing` | `{"tenant", "configured", "settings": {"soar_url", "verify_tls", "label", "splunk_asset", "es_asset", "app_asset", "ticket_base_url", "ticket_verify_tls", "soar_version", "app_version", "asset_id"}, "integration_user": {"username", "exists", "active", "token_active"}, "webhook": {"id", "active", "has_secret", "soar_label"} \| null, "playbooks", "last_check", "last_apply", "defaults", "steps", "bundle": {"available", "app_version", "playbooks"}}` |
+| `POST /pairing/check` | `{"soar_url", "soar_token", "verify_tls"?, "label"?, "splunk_asset"?, "es_asset"?, "app_asset"?}` → `200 {"ok", "soar_version", "checks": [{"check", "status", "detail"}]}`; checks `connection`, `splunk_asset`, `es_asset`, `app`, `label`; status `ok`, `info` or `failed`. Only GET requests to SOAR (labels via `GET /rest/container_options`). Audit `pairing.check` |
+| `POST /pairing/apply` | `{"soar_url", "soar_token", "verify_tls"? (true), "label"? ("mydemoticket"), "splunk_asset"? ("splunk"), "es_asset"? ("builtin_mc_connector"), "app_asset"? ("mydemoticket"), "ticket_base_url"? (`MYDEMOTICKET_PUBLIC_URL` or the request host), "ticket_verify_tls"? (true), "steps"? (all)}` → `200 {"ok", "soar_version", "connection": {"status", "detail"}, "steps": [{"step", "status", "detail"}]}`. Audit `pairing.apply` |
+
+Missing optional fields fall back to the values of the last run, then to the defaults. Steps
+(in this order): `user`, `webhook`, `label`, `app`, `asset`, `playbook_es_mirror`,
+`playbook_ticket_from_es`; `steps` may name a subset (`"playbooks"` = both playbook steps). Step
+status: `created`, `updated`, `exists`, `skipped` (not selected, or no SOAR connection) or
+`failed` (with the reason in `detail`); `ok` is false if the connection or any step failed.
+Validation errors (unknown field, bad URL, names outside `[A-Za-z0-9_.-]{1,100}`, unknown step)
+→ `422`; without `pairing.manage` → `403`; a second run while one is in progress → waits, then
+`409`.
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "X-MyDemoTicket-Tenant: acme" \
+  -H "Content-Type: application/json" \
+  -d '{"soar_url": "https://soar.example.com", "soar_token": "'"$SOAR_PH_AUTH_TOKEN"'",
+       "ticket_base_url": "https://ticket.example.com"}' "$MDT/pairing/apply"
+# {"ok": true, "soar_version": "8.8.0.123", "connection": {"status": "ok", ...},
+#  "steps": [{"step": "user", "status": "created", "detail": "integration user soar-acme ..."}, ...]}
+```
 
 ## Teams (admin)
 
