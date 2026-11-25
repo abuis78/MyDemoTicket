@@ -246,7 +246,7 @@ A new login starts in `soc-games` again.
 
 ```bash
 curl -s $MDT/health
-# {"status": "ok", "version": "1.1.0"}
+# {"status": "ok", "version": "1.2.0"}
 ```
 
 ### `GET /me`
@@ -306,21 +306,31 @@ Every non-GET request authenticated by the session cookie must send `X-CSRF-Toke
 
 | Query | Meaning |
 |---|---|
-| `state` | one state or comma list, e.g. `new,in_progress` |
-| `assignment_group` | team name; empty value = unassigned group |
-| `assigned_to` | username; empty value = unassigned |
-| `caller` | username |
-| `priority` | 1–4 |
+| `state` | one or more states, e.g. `new,in_progress` |
+| `priority` | one or more of 1–4, e.g. `1,2` |
+| `assignment_group` | one or more team names; `-` (or `null`, or an empty value) = no group |
+| `assigned_to` | one or more usernames; `-` (or `null`, or an empty value) = unassigned |
+| `caller` | one or more usernames |
 | `updated_since` | ISO-8601; returns tickets with `updated_at >= value` |
 | `q` | substring search in number, short description, description |
 | `external_ref.<key>` | exact match on `external_refs.<key>`; `<key>` must match `[a-z0-9_]{1,64}` (else `422`). The stored scalar is compared as text: a stored number `1133` matches `1133`, booleans match `true`/`false`. Several `external_ref.*` parameters are combined with AND, and with all other filters. |
 | `sort` | `-updated_at` (default), `updated_at`, `number`, `-number`, `priority`, `-priority` |
 | `limit` / `offset` | paging, `limit` 1–500 (default 50) |
 
+**Several values per filter (since 1.2.0):** give them comma-separated
+(`priority=1,2`), as repeated parameters (`priority=1&priority=2`) or both. Values of
+one filter are combined with OR, different filters with AND. A single value works as
+before. A team name that itself contains a comma matches as a whole
+(`assignment_group=Red%2C%20Blue`); several such teams go in repeated parameters.
+
 ```bash
 curl -s -H "Authorization: Bearer $TOKEN" \
   "$MDT/tickets?state=new,in_progress&assignment_group=SOC%20L1&updated_since=2026-11-24T00:00:00Z&limit=20"
 # {"items": [ticket, ...], "total": 3}
+
+# priority 1 or 2, in SOC L1 or without group, assigned to analyst1 or nobody
+curl -s -H "Authorization: Bearer $TOKEN" \
+  "$MDT/tickets?priority=1,2&assignment_group=SOC%20L1&assignment_group=-&assigned_to=analyst1,-"
 ```
 
 As everywhere, only tickets of the request's tenant are returned (requesters: only their own).
@@ -381,6 +391,40 @@ curl -s -X PATCH -H "Authorization: Bearer $TOKEN" -H "Content-Type: application
        "custom_fields": {"risk_score": 10}}' \
   $MDT/tickets/TKT0001001
 ```
+
+### `POST /tickets/bulk` → `200` result per ticket
+
+The same change for up to **200** tickets. Each ticket goes through exactly the
+code path of `PATCH /tickets/{number}`: permissions per ticket (incl.
+`tickets.close` for `resolved` / `closed` / `cancelled`), state transitions,
+required `close_notes` for `resolved`, journal entries, audit events and **one
+webhook event per changed ticket** (so the SOAR / ES mirror fires for every
+ticket). `X-MyDemoTicket-Source` works as for `PATCH` (e.g. `soar` → SOAR
+webhooks skip the event). A failing ticket does not stop the others.
+
+| Body field | Meaning |
+|---|---|
+| `numbers` | list of ticket numbers (or ids), 1–200; duplicates are ignored |
+| `changes` | object with any of `state`, `priority`, `assignment_group`, `assigned_to` (`null` = unassign), `close_notes` |
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" \
+  -d '{"numbers": ["TKT0001001", "TKT0001002", "TKT0001003"],
+       "changes": {"state": "resolved", "close_notes": "False positive (bulk)"}}' \
+  $MDT/tickets/bulk
+# {"results": [
+#   {"number": "TKT0001001", "ok": true,  "status": 200, "changed": true},
+#   {"number": "TKT0001002", "ok": false, "status": 409, "error": "transition closed -> resolved is not allowed"},
+#   {"number": "TKT0001003", "ok": false, "status": 403, "error": "ticket is assigned to another team or user"}]}
+```
+
+`status` / `error` per ticket are what a single `PATCH` would have answered
+(`403`, `404`, `409`, `422`). `changed: false` = the ticket already had these
+values (no journal entry, no event). The request itself fails with `422` only for
+a malformed body (no or more than 200 numbers, empty `changes`, a field other than
+the five above). Audit: one summary event `ticket.bulk_update` plus the normal
+per-ticket events (`ticket.update` / `ticket.state_change`, `access.denied` for
+`403`).
 
 ### `GET /tickets/{number}/journal` → array
 

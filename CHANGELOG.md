@@ -1,5 +1,37 @@
 # Changelog
 
+## 1.2.0 – 2026-11-25
+
+| Component | Version |
+|---|---|
+| Ticket system (`ticket-system/mydemoticket`) | 1.2.0 |
+| REST API | v1 |
+| Database schema | 4 (unchanged) |
+
+### Ticket system
+
+- `GET /tickets`: every filter takes several values, comma-separated or as repeated
+  parameters: `state`, `priority`, `assignment_group`, `assigned_to`, `caller`.
+  `-` (like `null` / empty) stands for "no group" / "unassigned" and can be combined
+  with names (`assigned_to=analyst1,-`). Single values behave as before.
+- `POST /tickets/bulk`: one change (`state`, `priority`, `assignment_group`,
+  `assigned_to`, `close_notes`) for up to 200 tickets. Each ticket runs through the
+  `PATCH` code path (permissions incl. `tickets.close`, transitions, close notes,
+  journal, audit, one webhook event per changed ticket, source handling); failures
+  are reported per ticket and do not stop the others. Summary audit event
+  `ticket.bulk_update`.
+
+### Web UI
+
+- Ticket list filters for state, priority, assignment group and assignee are
+  multi-select checkbox dropdowns (keyboard: Enter/Space opens, Escape closes),
+  kept in the URL hash.
+- Bulk editing: row checkboxes and "select all on page"; the bulk bar sets state
+  (with close notes for resolve/close/cancel), priority, assignment group and
+  assignee, then shows how many tickets were changed and which failed with the
+  reason, and reloads the list. Actions the user has no permission for are hidden.
+  All new texts in German and English.
+
 ## 1.1.0 – 2026-11-25
 
 | Component | Version |

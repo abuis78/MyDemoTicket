@@ -57,6 +57,7 @@ in `stats()` or in error messages.
 | `ticket.create` | Ticket created | `{"short_description": "...", "priority": ...}` |
 | `ticket.update` | Fields changed | `{"changed": ["priority", ...]}` |
 | `ticket.state_change` | State transition | **`{"from": "<old>", "to": "<new>"}`** (required by the report dashboard) |
+| `ticket.bulk_update` | `POST /tickets/bulk` (summary; each ticket also logs its own `ticket.update` / `ticket.state_change`); `outcome=failure` when no ticket succeeded | `{"count": 3, "ok": 2, "failed": 1, "changed": 2, "fields": ["priority"], "numbers": [...], "failures": [{"number": "...", "status": 403}]}` |
 | `ticket.comment` | Comment / work note added | `{"kind": "comment"}` |
 | `user.create` / `user.update` / `user.delete` | User management | `{"changed": [...]}` |
 | `token.create` / `token.revoke` | API tokens | `{"name": "..."}` (never the token value) |
