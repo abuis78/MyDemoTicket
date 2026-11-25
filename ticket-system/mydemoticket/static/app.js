@@ -211,7 +211,8 @@
   function field(labelText, control, opts) {
     opts = opts || {};
     return h("div", { class: opts.wide ? "wide" : null },
-      h("label", { class: opts.required ? "req" : null, for: control.id || null, text: labelText }),
+      h("label", { class: opts.required ? "req" : null, for: opts.labelFor || control.id || null,
+        id: opts.labelFor ? opts.labelFor + "-label" : null, text: labelText }),
       control);
   }
 
@@ -230,12 +231,93 @@
     var raw = location.hash.replace(/^#/, "") || "/tickets";
     var parts = raw.split("?");
     var params = {};
+    var raw = {};
     (parts[1] || "").split("&").forEach(function (kv) {
       if (!kv) return;
       var p = kv.split("=");
-      params[decodeURIComponent(p[0])] = decodeURIComponent((p[1] || "").replace(/\+/g, " "));
+      var key = decodeURIComponent(p[0]);
+      raw[key] = (p[1] || "").replace(/\+/g, " ");
+      params[key] = decodeURIComponent(raw[key]);
     });
-    return { path: parts[0], params: params };
+    return { path: parts[0], params: params, raw: raw };
+  }
+
+  // List filters in the hash: values joined by "," and each value URI-encoded (team names may contain ",").
+  function hashList(raw, key) {
+    if (!raw || !raw[key]) return [];
+    return raw[key].split(",").filter(function (v) { return v !== ""; }).map(decodeURIComponent);
+  }
+
+  function hashQuery(next) {
+    return Object.keys(next).map(function (k) {
+      var v = next[k];
+      return k + "=" + (Array.isArray(v) ? v.map(encodeURIComponent).join(",") : encodeURIComponent(v));
+    }).join("&");
+  }
+
+  // Multi-select filter: a button that opens a panel of checkboxes (keyboard: Enter/Space opens,
+  // Tab moves through the checkboxes, Escape closes and returns to the button).
+  var openMulti = null;
+  document.addEventListener("click", function (ev) {
+    if (openMulti && !openMulti.root.contains(ev.target)) openMulti.close(false);
+  });
+
+  function multiSelect(id, labelText, options, selected, emptyText) {
+    var chosen = selected.slice();
+    // name = field label (id + "-label", see field()) + current caption
+    var button = h("button", { type: "button", id: id, class: "multi-button", "aria-haspopup": "true",
+      "aria-expanded": "false", "aria-controls": id + "-panel", "aria-labelledby": id + "-label " + id });
+    var panel = h("div", { id: id + "-panel", class: "multi-panel", role: "group", "aria-label": labelText, hidden: true });
+    var root = h("div", { class: "multi" }, button, panel);
+    var api_ = {
+      root: root, button: button,
+      values: function () { return chosen.slice(); },
+      close: function (focus) {
+        panel.hidden = true;
+        button.setAttribute("aria-expanded", "false");
+        if (openMulti === api_) openMulti = null;
+        if (focus) button.focus();
+      }
+    };
+    function caption() {
+      if (!chosen.length) return emptyText;
+      if (chosen.length === 1) {
+        var one = options.filter(function (o) { return o[0] === chosen[0]; })[0];
+        return one ? one[1] : chosen[0];
+      }
+      return t("filter.n_selected", { count: chosen.length });
+    }
+    function refresh() { button.textContent = caption(); }
+    options.forEach(function (opt, i) {
+      var box = h("input", { type: "checkbox", id: id + "-" + i, value: opt[0], checked: chosen.indexOf(opt[0]) >= 0,
+        onchange: function () {
+          var at = chosen.indexOf(opt[0]);
+          if (box.checked && at < 0) chosen.push(opt[0]);
+          if (!box.checked && at >= 0) chosen.splice(at, 1);
+          refresh();
+        } });
+      panel.appendChild(h("label", { class: "check", for: box.id }, box, opt[1]));
+    });
+    panel.appendChild(h("div", { class: "actions" },
+      h("button", { type: "button", class: "link", onclick: function () {
+        Array.prototype.forEach.call(panel.querySelectorAll("input[type=checkbox]"), function (b) { b.checked = false; });
+        chosen = [];
+        refresh();
+      } }, t("filter.clear"))));
+    button.addEventListener("click", function () {
+      if (!panel.hidden) { api_.close(true); return; }
+      if (openMulti) openMulti.close(false);
+      panel.hidden = false;
+      button.setAttribute("aria-expanded", "true");
+      openMulti = api_;
+      var first = panel.querySelector("input");
+      if (first) first.focus();
+    });
+    root.addEventListener("keydown", function (ev) {
+      if (ev.key === "Escape" && !panel.hidden) { ev.preventDefault(); api_.close(true); }
+    });
+    refresh();
+    return api_;
   }
 
   function canModify(ticket) {
@@ -423,7 +505,7 @@
       if (r.params.mine) nav = "mine";
       else if (r.params.unassigned) nav = "unassigned";
       else if (r.params.all) nav = "all";
-      viewList(r.params);
+      viewList(r.params, r.raw);
     }
     Array.prototype.forEach.call(document.querySelectorAll(".sidebar a"), function (a) {
       a.classList.toggle("active", a.getAttribute("data-nav") === nav);
@@ -432,59 +514,125 @@
   window.addEventListener("hashchange", route);
 
   // ------------------------------------------------------------ ticket list
-  function viewList(params) {
+  var NONE = "-"; // filter / bulk value for "not set" (unassigned), see docs/api.md
+  var pendingBulkSummary = null; // shown once above the list after a bulk change
+
+  function viewList(params, raw) {
     var query = { limit: 25, offset: parseInt(params.offset || "0", 10) || 0 };
-    if (params.state) query.state = params.state;
-    else if (!params.all) query.state = "new,in_progress,on_hold";
+    var states = hashList(raw, "state");
+    var prios = hashList(raw, "priority");
+    var groups = hashList(raw, "assignment_group");
+    var assignees = hashList(raw, "assigned_to");
+    if (!states.length && !params.all) states = ["new", "in_progress", "on_hold"];
+    var filterAssignees = assignees.length ? assignees
+      : params.mine ? [session.me.username] : params.unassigned ? [NONE] : [];
     if (params.q) query.q = params.q;
-    if (params.assignment_group) query.assignment_group = params.assignment_group;
-    if (params.mine) query.assigned_to = session.me.username;
-    if (params.unassigned) query.assigned_to = "";
 
     var title = params.mine ? t("list.title_mine") : params.unassigned ? t("list.title_unassigned")
       : params.all ? t("list.title_all") : t("list.title_open");
-    var stateSel = select("f-state", STATES.map(function (s) { return [s, label("state.", s)]; }),
-      params.state || "", t("list.any_state"));
-    var groupSel = select("f-group", session.teams.map(function (x) { return x.name; }),
-      params.assignment_group || "", t("list.any_group"));
+    var stateMulti = multiSelect("f-state", t("list.state"),
+      STATES.map(function (s) { return [s, label("state.", s)]; }), states, t("filter.all_states"));
+    var prioMulti = multiSelect("f-priority", t("list.priority"), priorityOptions(), prios, t("filter.all_priorities"));
+    var groupMulti = multiSelect("f-group", t("list.group"),
+      [[NONE, t("filter.no_group")]].concat(session.teams.map(function (x) { return [x.name, x.name]; })),
+      groups, t("list.any_group"));
+    var assigneeMulti = multiSelect("f-assignee", t("list.assigned_to"),
+      [[NONE, t("filter.unassigned")]].concat(session.users.map(function (u) { return [u.username, u.display_name]; })),
+      filterAssignees, t("filter.anyone"));
     var qInput = h("input", { id: "f-q", type: "search", value: params.q || "", placeholder: t("list.search_placeholder") });
     function apply(ev) {
       if (ev) ev.preventDefault();
       var next = {};
-      ["mine", "unassigned", "all"].forEach(function (k) { if (params[k]) next[k] = params[k]; });
-      if (stateSel.value) next.state = stateSel.value;
-      if (groupSel.value) next.assignment_group = groupSel.value;
+      var who = assigneeMulti.values();
+      var sameWho = who.join(",") === filterAssignees.join(",");
+      // "mine" / "unassigned" stay as long as the assignee filter was not changed
+      ["mine", "unassigned"].forEach(function (k) { if (params[k] && sameWho && !assignees.length) next[k] = params[k]; });
+      if (params.all || !stateMulti.values().length) next.all = "1"; // nothing checked = every state
+      if (stateMulti.values().length) next.state = stateMulti.values();
+      if (prioMulti.values().length) next.priority = prioMulti.values();
+      if (groupMulti.values().length) next.assignment_group = groupMulti.values();
+      if (who.length && !next.mine && !next.unassigned) next.assigned_to = who;
       if (qInput.value.trim()) next.q = qInput.value.trim();
-      location.hash = "#/tickets?" + Object.keys(next).map(function (k) {
-        return k + "=" + encodeURIComponent(next[k]);
-      }).join("&");
+      location.hash = "#/tickets?" + hashQuery(next);
     }
     var filters = h("form", { class: "filters panel-body", onsubmit: apply },
-      field(t("list.state"), stateSel),
-      !isRequester() ? field(t("list.group"), groupSel) : null,
+      field(t("list.state"), stateMulti.root, { labelFor: "f-state" }),
+      field(t("list.priority"), prioMulti.root, { labelFor: "f-priority" }),
+      !isRequester() ? field(t("list.group"), groupMulti.root, { labelFor: "f-group" }) : null,
+      !isRequester() ? field(t("list.assigned_to"), assigneeMulti.root, { labelFor: "f-assignee" }) : null,
       field(t("list.search"), qInput),
       h("div", null, h("button", { class: "primary", type: "submit" }, t("common.apply"))));
 
-    var tbody = h("tbody", null, h("tr", null, h("td", { colspan: 7, class: "muted", text: t("common.loading") })));
+    // ---- selection + bulk bar
+    var selectable = bulkAllowed();
+    var selected = [];
+    var rowBoxes = [];
+    var allBox = h("input", { type: "checkbox", id: "bulk-all", "aria-label": t("bulk.select_all"),
+      onchange: function () {
+        rowBoxes.forEach(function (rb) { rb.box.checked = allBox.checked; });
+        selected = allBox.checked ? rowBoxes.map(function (rb) { return rb.number; }) : [];
+        syncBar();
+      } });
+    var bar = bulkBar(function () { return selected.slice(); }, function () {
+      selected = [];
+      rowBoxes.forEach(function (rb) { rb.box.checked = false; });
+      allBox.checked = false;
+      syncBar();
+    });
+    function syncBar() {
+      bar.update(selected.length);
+      allBox.checked = rowBoxes.length > 0 && selected.length === rowBoxes.length;
+      allBox.indeterminate = selected.length > 0 && selected.length < rowBoxes.length;
+    }
+
+    var cols = selectable ? 8 : 7;
+    var tbody = h("tbody", null, h("tr", null, h("td", { colspan: cols, class: "muted", text: t("common.loading") })));
     var pager = h("div", { class: "pager" });
+    var summary = pendingBulkSummary;
+    pendingBulkSummary = null;
     render(h("div", { class: "panel" },
       h("div", { class: "panel-head" }, h("h1", { text: title }), h("span", { class: "spacer" }),
         canCreate() ? h("a", { class: "btn", href: "#/new" }, t("list.new")) : null),
       filters,
+      summary,
+      selectable ? bar.el : null,
       h("table", { class: "list" },
-        h("thead", null, h("tr", null, ["col.number", "col.short_description", "col.state", "col.priority",
-          "col.group", "col.assigned_to", "col.updated"].map(function (c) { return h("th", { text: t(c) }); }))),
+        h("thead", null, h("tr", null,
+          selectable ? h("th", { class: "select-col" }, allBox) : null,
+          ["col.number", "col.short_description", "col.state", "col.priority",
+            "col.group", "col.assigned_to", "col.updated"].map(function (c) { return h("th", { text: t(c) }); }))),
         tbody),
       pager));
 
-    var qs = Object.keys(query).map(function (k) { return k + "=" + encodeURIComponent(query[k]); }).join("&");
-    api("GET", "/tickets?" + qs).then(function (data) {
+    var parts = Object.keys(query).map(function (k) { return k + "=" + encodeURIComponent(query[k]); });
+    function addMulti(key, values) {
+      values.forEach(function (v) { parts.push(key + "=" + encodeURIComponent(v)); });
+    }
+    addMulti("state", states);
+    addMulti("priority", prios);
+    addMulti("assignment_group", groups);
+    if (assignees.length) addMulti("assigned_to", assignees);
+    else if (params.mine) addMulti("assigned_to", [session.me.username]);
+    else if (params.unassigned) parts.push("assigned_to=");
+    api("GET", "/tickets?" + parts.join("&")).then(function (data) {
       clear(tbody);
       if (!data.items.length) {
-        tbody.appendChild(h("tr", null, h("td", { colspan: 7, class: "muted", text: t("list.empty") })));
+        tbody.appendChild(h("tr", null, h("td", { colspan: cols, class: "muted", text: t("list.empty") })));
       }
       data.items.forEach(function (x) {
+        var box = null;
+        if (selectable) {
+          box = h("input", { type: "checkbox", "aria-label": t("bulk.select_row", { number: x.number }),
+            onchange: function () {
+              var at = selected.indexOf(x.number);
+              if (box.checked && at < 0) selected.push(x.number);
+              if (!box.checked && at >= 0) selected.splice(at, 1);
+              syncBar();
+            } });
+          rowBoxes.push({ number: x.number, box: box });
+        }
         tbody.appendChild(h("tr", null,
+          selectable ? h("td", { class: "select-col" }, box) : null,
           h("td", null, h("a", { href: "#/tickets/" + encodeURIComponent(x.number), text: x.number })),
           h("td", { text: x.short_description }),
           h("td", null, stateBadge(x.state)),
@@ -493,18 +641,114 @@
           h("td", { text: x.assigned_to || "" }),
           h("td", { text: fmtTime(x.updated_at) })));
       });
+      allBox.disabled = !rowBoxes.length;
       var from = data.total ? query.offset + 1 : 0;
       var to = Math.min(query.offset + query.limit, data.total);
       pager.appendChild(h("span", { text: t("list.range", { from: from, to: to, total: data.total }) }));
       function page(delta) {
-        var p = Object.assign({}, params, { offset: Math.max(0, query.offset + delta) });
-        location.hash = "#/tickets?" + Object.keys(p).map(function (k) {
-          return k + "=" + encodeURIComponent(p[k]);
-        }).join("&");
+        var keep = Object.keys(raw).filter(function (k) { return k !== "offset"; })
+          .map(function (k) { return k + "=" + raw[k]; });
+        keep.push("offset=" + Math.max(0, query.offset + delta));
+        location.hash = "#/tickets?" + keep.join("&");
       }
       pager.appendChild(h("button", { disabled: query.offset === 0, onclick: function () { page(-query.limit); } }, t("common.previous")));
       pager.appendChild(h("button", { disabled: to >= data.total, onclick: function () { page(query.limit); } }, t("common.next")));
     }).catch(fail);
+  }
+
+  // Bulk editing: who may change anything at all (per-ticket checks are done by the server).
+  function bulkAllowed() {
+    return can("tickets.update_all") || can("tickets.update_own") || (isRequester() && can("tickets.create"));
+  }
+
+  function bulkBar(getSelected, clearSelection) {
+    var requester = isRequester();
+    var mayClose = can("tickets.close");
+    var stateOpts = STATES.filter(function (s) {
+      if (s === "new") return false; // no transition leads back to "new"
+      if (requester) return s === "cancelled";
+      return mayClose || CLOSING_STATES.indexOf(s) < 0;
+    }).map(function (s) { return [s, label("state.", s)]; });
+    var keep = t("bulk.keep");
+    var stateSel = select("bulk-state", stateOpts, "", keep);
+    var prioSel = select("bulk-priority", priorityOptions(), "", keep);
+    var groupSel = select("bulk-group", [[NONE, t("common.none")]].concat(session.teams.map(function (x) { return [x.name, x.name]; })), "", keep);
+    var userSel = select("bulk-assignee", [[NONE, t("common.none")]].concat(session.users.map(function (u) {
+      return [u.username, u.display_name];
+    })), "", keep);
+    var notes = h("textarea", { id: "bulk-notes", "aria-describedby": "bulk-notes-hint" });
+    var notesField = h("div", { class: "wide", hidden: true },
+      h("label", { for: "bulk-notes", id: "bulk-notes-label", text: t("bulk.close_notes") }), notes,
+      h("div", { class: "muted", id: "bulk-notes-hint", text: t("bulk.close_notes_hint") }));
+    var count = h("strong", { role: "status", "aria-live": "polite" });
+    var message = h("div", { class: "error", role: "alert" });
+    var applyBtn = h("button", { class: "primary", type: "submit" }, t("bulk.apply"));
+    stateSel.addEventListener("change", function () {
+      var closing = CLOSING_STATES.indexOf(stateSel.value) >= 0;
+      notesField.hidden = !closing;
+      document.getElementById("bulk-notes-label").className = stateSel.value === "resolved" ? "req" : "";
+    });
+    var form = h("form", { class: "bulk-bar panel-body", "aria-label": t("bulk.title"), hidden: true,
+      onsubmit: function (ev) {
+        ev.preventDefault();
+        message.textContent = "";
+        var numbers = getSelected();
+        var changes = {};
+        if (stateSel.value) changes.state = stateSel.value;
+        if (!requester) {
+          if (prioSel.value) changes.priority = parseInt(prioSel.value, 10);
+          if (groupSel.value) changes.assignment_group = groupSel.value === NONE ? null : groupSel.value;
+          if (userSel.value) changes.assigned_to = userSel.value === NONE ? null : userSel.value;
+        }
+        if (!Object.keys(changes).length) { message.textContent = t("bulk.nothing_selected"); return; }
+        if (changes.state && CLOSING_STATES.indexOf(changes.state) >= 0 && notes.value.trim()) {
+          changes.close_notes = notes.value.trim();
+        }
+        if (changes.state === "resolved" && !changes.close_notes) {
+          message.textContent = t("bulk.close_notes_required");
+          notes.focus();
+          return;
+        }
+        applyBtn.disabled = true;
+        api("POST", "/tickets/bulk", { numbers: numbers, changes: changes }).then(function (res) {
+          pendingBulkSummary = bulkSummary(res.results || []);
+          route();
+        }).catch(function (err) {
+          applyBtn.disabled = false;
+          if (err && err.status === 401) { fail(err); return; }
+          message.textContent = errorText(err);
+        });
+      } },
+      h("div", { class: "bulk-head" }, count, h("button", { type: "button", class: "link", onclick: clearSelection },
+        t("bulk.clear_selection"))),
+      h("div", { class: "filters" },
+        field(t("bulk.set_state"), stateSel),
+        !requester ? field(t("bulk.set_priority"), prioSel) : null,
+        !requester ? field(t("bulk.set_group"), groupSel) : null,
+        !requester ? field(t("bulk.set_assignee"), userSel) : null,
+        h("div", null, applyBtn)),
+      notesField, message);
+    return {
+      el: form,
+      update: function (n) {
+        form.hidden = n === 0;
+        count.textContent = t("bulk.selected", { count: n });
+      }
+    };
+  }
+
+  function bulkSummary(results) {
+    var ok = results.filter(function (r) { return r.ok; });
+    var failed = results.filter(function (r) { return !r.ok; });
+    var box = h("div", { class: "bulk-summary panel-body", role: "status", "aria-live": "polite", tabindex: "-1" },
+      h("p", { class: failed.length ? "" : "ok-text",
+        text: t("bulk.result", { ok: ok.length, total: results.length }) }),
+      failed.length ? h("p", { class: "error", text: t("bulk.failed_count", { count: failed.length }) }) : null,
+      failed.length ? h("ul", { class: "bulk-failures" }, failed.map(function (r) {
+        return h("li", null, h("a", { href: "#/tickets/" + encodeURIComponent(r.number), text: r.number }),
+          " " + t("bulk.failure", { status: r.status, error: r.error || "" }));
+      })) : null);
+    return box;
   }
 
   // ------------------------------------------------------ custom field input
