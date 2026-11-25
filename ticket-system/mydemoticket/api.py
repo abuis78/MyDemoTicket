@@ -29,6 +29,7 @@ from .auth import (
     verify_password,
 )
 from .db import dumps, loads, parse_iso, utcnow
+from .settings import apply_splunk, save_splunk, splunk_config
 
 try:  # Python 3.9+; without zoneinfo only the empty time zone (= browser) is valid
     import zoneinfo
@@ -406,6 +407,65 @@ class Api:
     def audit_status(self, ctx):
         self._require_admin(ctx)
         return 200, self.audit.stats()
+
+    # =====================================================================
+    # Splunk connection (platform_admin)
+    # =====================================================================
+    @staticmethod
+    def _splunk_dict(cfg):
+        return {"hec_url": cfg["hec_url"], "index": cfg["index"], "verify_tls": cfg["verify_tls"],
+                "enabled": cfg["enabled"], "token_set": bool(cfg["token"]), "source": cfg["source"]}
+
+    def get_splunk_settings(self, ctx):
+        require_permission(ctx.principal, "splunk.manage")
+        return 200, self._splunk_dict(splunk_config(self.db))
+
+    def put_splunk_settings(self, ctx):
+        require_permission(ctx.principal, "splunk.manage")
+        body = _require_obj(ctx.body)
+        unknown = set(body) - {"hec_url", "index", "verify_tls", "enabled", "token"}
+        if unknown:
+            raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])
+        current = splunk_config(self.db)
+        url = current["hec_url"]
+        if "hec_url" in body:
+            url = _text(body["hec_url"], "hec_url", max_len=2000).strip()
+            if url and not re.match(r"^https?://[^\s/]+", url, re.IGNORECASE):
+                raise ApiError(422, "'hec_url' must be an http(s) URL or empty")
+        index = current["index"]
+        if "index" in body:
+            index = body["index"] if body["index"] is not None else ""
+            if not isinstance(index, str) or (index and not INDEX_RE.match(index)):
+                raise ApiError(422, "'index' must match [a-z0-9][a-z0-9_-]{0,79} or be empty")
+        verify = _bool(body["verify_tls"], "verify_tls") if "verify_tls" in body else current["verify_tls"]
+        enabled = _bool(body["enabled"], "enabled") if "enabled" in body else current["enabled"]
+        token = body.get("token")
+        if token is not None:
+            if not isinstance(token, str) or len(token) > 500 or any(c.isspace() for c in token):
+                raise ApiError(422, "'token' must be a string without whitespace (max 500 characters)")
+        effective_token = current["token"] if token is None else token
+        if enabled and not (url and effective_token):
+            raise ApiError(422, "'hec_url' and 'token' are required when the connection is enabled")
+        save_splunk(self.db, url, index, verify, enabled, token)
+        apply_splunk(self.db, self.audit)
+        credential = "kept" if token is None else ("cleared" if token == "" else "replaced")
+        self._log(ctx, "settings.splunk_update", object_type="settings", object_id="splunk",
+                  details={"url_host": _url_host(url) if url else None, "index": index or None,
+                           "verify_tls": verify, "enabled": enabled, "credential": credential,
+                           "previous_source": current["source"]})
+        return 200, self._splunk_dict(splunk_config(self.db))
+
+    def test_splunk_settings(self, ctx):
+        p = ctx.principal
+        require_permission(p, "splunk.manage")
+        if not hasattr(self.audit, "send_test"):
+            ok, message = False, "the audit logger in use cannot send to Splunk HEC"
+        else:
+            ok, message = self.audit.send_test(tenant=ctx.tenant["slug"], actor=p.username, role=p.role,
+                                               source=ctx.source, ip=ctx.ip, request_id=ctx.request_id)
+        self._log(ctx, "settings.splunk_test", outcome="success" if ok else "failure", object_type="settings",
+                  object_id="splunk", details={"ok": ok, "message": message})
+        return 200, {"ok": ok, "message": message}
 
     # =====================================================================
     # tenants (platform_admin)

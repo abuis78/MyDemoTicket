@@ -8,6 +8,8 @@ Design goals:
   (up to 50 events or 2 s) with exponential backoff on transient failures.
 - Each HEC event carries the tenant as indexed field and can be routed to a
   per-tenant index via ``index_resolver(tenant_slug)``.
+- ``configure()`` changes the HEC connection at runtime (Audit / Splunk page);
+  ``send_test()`` sends one event synchronously and reports the result.
 
 Pure standard library, Python 3.9 compatible.
 """
@@ -21,6 +23,7 @@ import ssl
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 
 from . import __version__
@@ -41,6 +44,7 @@ STOP_FLUSH_TIMEOUT = 5.0
 ROTATE_BYTES = 10 * 1024 * 1024
 ROTATE_KEEP = 5
 HTTP_TIMEOUT = 10.0
+TEST_TIMEOUT = 5.0
 
 
 def _truncate(value):
@@ -111,6 +115,7 @@ class AuditLogger:
         self.log_path = os.path.join(self.log_dir, "audit.log")
         self.hec_url = _hec_endpoint(hec_url) if hec_url else None
         self._token = hec_token or None
+        self._old_tokens = set()           # replaced tokens, still masked in error messages
         self.hec_enabled = bool(self.hec_url and self._token)
         self.verify_tls = bool(verify_tls)
         self.default_index = default_index or None
@@ -154,6 +159,63 @@ class AuditLogger:
             default_index=os.environ.get("MYDEMOTICKET_HEC_INDEX") or None,
             index_resolver=index_resolver,
         )
+
+    def configure(self, hec_url=None, hec_token=None, verify_tls=True, default_index=None, enabled=True):
+        """Change the HEC connection of a running (or stopped) logger. Thread-safe, never raises.
+
+        Events already waiting for HEC are sent with the new connection; when HEC
+        gets disabled they are discarded from the HEC queue (they stay in the local file).
+        """
+        start_sender = False
+        with self._cond:
+            if self._token and self._token != (hec_token or None):
+                self._old_tokens.add(self._token)
+            self.hec_url = _hec_endpoint(hec_url) if hec_url else None
+            self._token = hec_token or None
+            self.verify_tls = bool(verify_tls)
+            self.default_index = default_index or None
+            self.hec_enabled = bool(enabled and self.hec_url and self._token)
+            if not self.hec_enabled:
+                self._hecq.clear()
+            if self.hec_enabled and self._running and not self._stopping and (
+                    self._sender is None or not self._sender.is_alive()):
+                start_sender = True
+            self._cond.notify_all()
+        if start_sender:
+            sender = threading.Thread(target=self._sender_loop, name="audit-hec", daemon=True)
+            with self._cond:
+                self._sender = sender
+            sender.start()
+
+    def connection(self):
+        """Current HEC connection (without the token)."""
+        with self._cond:
+            return {"hec_url": self.hec_url, "verify_tls": self.verify_tls, "index": self.default_index,
+                    "enabled": self.hec_enabled, "token_set": bool(self._token)}
+
+    def send_test(self, tenant=None, actor=None, role=None, source=None, ip=None, request_id=None,
+                  timeout=TEST_TIMEOUT):
+        """Send one ``splunk.test`` event synchronously. Returns (ok, message); never raises.
+
+        Works with a configured URL and token even while HEC shipping is disabled.
+        """
+        with self._cond:
+            url, token, verify = self.hec_url, self._token, self.verify_tls
+        if not url or not token:
+            return False, "Splunk HEC is not configured (URL and token are required)"
+        try:
+            now = time.time()
+            event = self._build_event(now, "splunk.test", tenant=tenant, actor=actor, role=role,
+                                      outcome="success", object_type="settings", object_id="splunk",
+                                      source=source, ip=ip, request_id=request_id,
+                                      details={"message": "MyDemoTicket connection test"})
+            body = json.dumps(self._hec_event(now, event), ensure_ascii=False, default=str).encode("utf-8")
+            self._post(body, url=url, token=token, verify_tls=verify, timeout=timeout)
+        except (_RetryableError, _PermanentError) as exc:
+            return False, self._sanitize(str(exc))
+        except Exception as exc:  # pragma: no cover - defensive
+            return False, "HEC error: %s" % exc.__class__.__name__
+        return True, "test event accepted by Splunk HEC (%s)" % urllib.parse.urlsplit(url).netloc
 
     # --------------------------------------------------------------- lifecycle
 
@@ -208,27 +270,9 @@ class AuditLogger:
         """Queue an audit event. Never blocks, never raises."""
         try:
             now = time.time()
-            event = {
-                "ts": _iso(now),
-                "tenant": None if tenant is None else str(tenant),
-                "action": str(action),
-                "actor": None if actor is None else str(actor),
-                "role": None if role is None else str(role),
-                "outcome": str(outcome) if outcome else "success",
-                "object_type": None if object_type is None else str(object_type),
-                "object_id": None if object_id is None else redact(object_id),
-                "source": None if source is None else str(source),
-                "ip": None if ip is None else str(ip),
-                "request_id": None if request_id is None else str(request_id),
-                "details": redact(details) if isinstance(details, dict) else ({} if details is None
-                                                                             else {"value": redact(details)}),
-                "app": "mydemoticket",
-                "version": __version__,
-            }
-            for key in ("tenant", "action", "actor", "role", "outcome", "object_type", "source", "ip",
-                        "request_id"):
-                if isinstance(event[key], str):
-                    event[key] = _truncate(event[key])
+            event = self._build_event(now, action, tenant=tenant, actor=actor, role=role, outcome=outcome,
+                                      object_type=object_type, object_id=object_id, source=source, ip=ip,
+                                      request_id=request_id, details=details)
             with self._cond:
                 self._push_locked(self._inq, (now, event))
                 self._cond.notify_all()
@@ -238,6 +282,32 @@ class AuditLogger:
                     self._stats["dropped"] += 1
             except Exception:
                 pass
+
+    @staticmethod
+    def _build_event(now, action, *, tenant, actor=None, role=None, outcome="success", object_type=None,
+                     object_id=None, source=None, ip=None, request_id=None, details=None):
+        event = {
+            "ts": _iso(now),
+            "tenant": None if tenant is None else str(tenant),
+            "action": str(action),
+            "actor": None if actor is None else str(actor),
+            "role": None if role is None else str(role),
+            "outcome": str(outcome) if outcome else "success",
+            "object_type": None if object_type is None else str(object_type),
+            "object_id": None if object_id is None else redact(object_id),
+            "source": None if source is None else str(source),
+            "ip": None if ip is None else str(ip),
+            "request_id": None if request_id is None else str(request_id),
+            "details": redact(details) if isinstance(details, dict) else ({} if details is None
+                                                                         else {"value": redact(details)}),
+            "app": "mydemoticket",
+            "version": __version__,
+        }
+        for key in ("tenant", "action", "actor", "role", "outcome", "object_type", "source", "ip",
+                    "request_id"):
+            if isinstance(event[key], str):
+                event[key] = _truncate(event[key])
+        return event
 
     def _push_locked(self, queue, item):
         if len(queue) >= self._max_queue:
@@ -394,18 +464,23 @@ class AuditLogger:
                 with self._cond:
                     self._stopping = True
 
-    def _post(self, body):
-        req = urllib.request.Request(self.hec_url, data=body, method="POST")
-        req.add_header("Authorization", "Splunk " + self._token)
+    def _post(self, body, url=None, token=None, verify_tls=None, timeout=HTTP_TIMEOUT):
+        if url is None:
+            with self._cond:  # snapshot: configure() may change the connection at any time
+                url, token, verify_tls, enabled = self.hec_url, self._token, self.verify_tls, self.hec_enabled
+            if not enabled:
+                raise _PermanentError("HEC disabled")
+        req = urllib.request.Request(url, data=body, method="POST")
+        req.add_header("Authorization", "Splunk " + token)
         req.add_header("Content-Type", "application/json")
         ctx = None
-        if self.hec_url.lower().startswith("https"):
+        if url.lower().startswith("https"):
             ctx = ssl.create_default_context()
-            if not self.verify_tls:
+            if not verify_tls:
                 ctx.check_hostname = False
                 ctx.verify_mode = ssl.CERT_NONE
         try:
-            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT, context=ctx) as resp:
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
                 resp.read()
         except urllib.error.HTTPError as exc:
             detail = ""
@@ -423,10 +498,15 @@ class AuditLogger:
             reason = getattr(exc, "reason", exc)
             raise _RetryableError("HEC network error: %s" % reason)
 
-    def _set_error(self, message):
+    def _sanitize(self, message):
         msg = str(message)
-        if self._token:
-            msg = msg.replace(self._token, "***")
-        msg = _truncate(msg)[:512]
+        with self._cond:
+            tokens = [t for t in [self._token] + list(self._old_tokens) if t]
+        for token in tokens:
+            msg = msg.replace(token, "***")
+        return _truncate(msg)[:512]
+
+    def _set_error(self, message):
+        msg = self._sanitize(message)
         with self._cond:
             self._stats["last_error"] = msg

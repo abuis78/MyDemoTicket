@@ -25,6 +25,7 @@ from .auth import (
     resolve_tenant,
 )
 from .db import Database
+from .settings import apply_splunk, splunk_config
 from .tenants import TENANT_HEADER, default_tenant, tenant_by_id, tenant_by_slug
 from .webhooks import WebhookDispatcher
 
@@ -47,6 +48,9 @@ ROUTES = [
     ("PATCH", r"/tenants/(?P<slug>[^/]+)", "patch_tenant", True),
     ("GET", r"/reports/summary", "reports_summary", True),
     ("GET", r"/audit/status", "audit_status", True),
+    ("GET", r"/settings/splunk", "get_splunk_settings", True),
+    ("PUT", r"/settings/splunk", "put_splunk_settings", True),
+    ("POST", r"/settings/splunk/test", "test_splunk_settings", True),
     ("GET", r"/tickets", "list_tickets", True),
     ("POST", r"/tickets", "create_ticket", True),
     ("GET", r"/tickets/(?P<number>[^/]+)", "get_ticket", True),
@@ -120,6 +124,8 @@ class App:
         self.audit = audit_logger if audit_logger is not None else AuditLogger.from_env(
             self.data_dir, index_resolver=self.tenant_index
         )
+        if splunk_config(self.db)["source"] == "settings":
+            apply_splunk(self.db, self.audit)  # stored connection wins over MYDEMOTICKET_HEC_*
         if hasattr(self.audit, "start"):
             self.audit.start()
         self.api = Api(self.db, None, audit=self.audit)
