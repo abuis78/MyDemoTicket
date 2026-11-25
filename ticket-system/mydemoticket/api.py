@@ -25,6 +25,11 @@ from .auth import (
     verify_password,
 )
 from .db import dumps, loads, parse_iso, utcnow
+
+try:  # Python 3.9+; without zoneinfo only the empty time zone (= browser) is valid
+    import zoneinfo
+except ImportError:  # pragma: no cover
+    zoneinfo = None
 from .tenants import (
     DEFAULT_TENANT_SLUG,
     INDEX_RE,
@@ -70,6 +75,10 @@ FIELD_NAME_RE = re.compile(r"^[a-z0-9_]{1,64}$")
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 EXTERNAL_REF_PREFIX = "external_ref."
 MAX_AUTHOR = 64
+THEMES = ("system", "light", "dark")
+LANGUAGES = ("de", "en")
+PROFILE_FIELDS = ("display_name", "email", "timezone", "theme", "language")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
 MAX_TEXT = 100_000
 MAX_LIMIT = 500
 
@@ -155,6 +164,23 @@ def _external_ref_filters(query):
     return where, params
 
 
+def _timezone(value):
+    """'' (use the browser's time zone) or an IANA name loadable via zoneinfo."""
+    if not isinstance(value, str):
+        raise ApiError(422, "'timezone' must be a string")
+    value = value.strip()
+    if not value:
+        return ""
+    error = ApiError(422, "'timezone' must be an IANA time zone name (e.g. Europe/Berlin) or empty")
+    if zoneinfo is None or len(value) > 64 or value.startswith("/") or ".." in value:
+        raise error
+    try:
+        zoneinfo.ZoneInfo(value)
+    except Exception:  # ZoneInfoNotFoundError, ValueError, missing tzdata, ...
+        raise error
+    return value
+
+
 def _bool(value, field):
     if not isinstance(value, bool):
         raise ApiError(422, "'%s' must be a boolean" % field)
@@ -222,6 +248,10 @@ class Api:
         p = ctx.principal
         row = self.db.query_one("SELECT * FROM users WHERE id = ?", (p.id,))
         data = self._user_dict(row)
+        data["timezone"] = row["timezone"]
+        data["theme"] = row["theme"]
+        data["language"] = row["language"]
+        data["permissions"] = sorted(p.permissions)
         data["tenant"] = tenant_ref(ctx.tenant)
         if p.is_platform_admin:
             data["active_tenant"] = tenant_ref(ctx.tenant)
@@ -229,6 +259,79 @@ class Api:
         if p.via == "session":
             data["csrf_token"] = p.csrf_token
         return 200, data
+
+    def patch_me(self, ctx):
+        """PATCH /me: the caller changes their own profile."""
+        p = ctx.principal
+        body = _require_obj(ctx.body)
+        unknown = set(body) - set(PROFILE_FIELDS)
+        if unknown:
+            raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])
+        row = self.db.query_one("SELECT * FROM users WHERE id = ?", (p.id,))
+        new = {k: row[k] for k in PROFILE_FIELDS}
+        if "display_name" in body:
+            new["display_name"] = _text(body["display_name"], "display_name", required=True, max_len=200).strip()
+        if "email" in body:
+            email = _text(body["email"], "email", max_len=200).strip()
+            if email and not EMAIL_RE.match(email):
+                raise ApiError(422, "'email' must be an e-mail address or empty")
+            new["email"] = email
+        if "timezone" in body:
+            new["timezone"] = _timezone(body["timezone"])
+        if "theme" in body:
+            if body["theme"] not in THEMES:
+                raise ApiError(422, "'theme' must be one of: %s" % ", ".join(THEMES))
+            new["theme"] = body["theme"]
+        if "language" in body:
+            if body["language"] not in LANGUAGES:
+                raise ApiError(422, "'language' must be one of: %s" % ", ".join(LANGUAGES))
+            new["language"] = body["language"]
+        changes = {k: {"old": row[k], "new": new[k]} for k in PROFILE_FIELDS if row[k] != new[k]}
+        if changes:
+            self.db.execute(
+                "UPDATE users SET display_name = ?, email = ?, timezone = ?, theme = ?, language = ? WHERE id = ?",
+                (new["display_name"], new["email"], new["timezone"], new["theme"], new["language"], p.id),
+            )
+            p.display_name = new["display_name"]
+            self._log(ctx, "profile.update", object_type="user", object_id=p.username,
+                      details={"changed": sorted(changes), "changes": changes})
+        return self.me(ctx)
+
+    def change_own_password(self, ctx):
+        """POST /me/password: keeps the current session, ends all other sessions of the user."""
+        p = ctx.principal
+        body = _require_obj(ctx.body)
+        unknown = set(body) - {"current_password", "new_password"}
+        if unknown:
+            raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])
+        row = self.db.query_one("SELECT * FROM users WHERE id = ?", (p.id,))
+        if not row["password_hash"]:
+            raise ApiError(422, "no password set")
+        current = body.get("current_password")
+        if not isinstance(current, str) or not current:
+            raise ApiError(422, "'current_password' is required")
+        new_password = body.get("new_password")
+        if not isinstance(new_password, str) or len(new_password) < 8:
+            raise ApiError(422, "'new_password' must be a string with at least 8 characters")
+        if not verify_password(current, row["password_hash"]):
+            self._log(ctx, "profile.password_change", outcome="failure", object_type="user",
+                      object_id=p.username, details={"reason": "wrong current password"})
+            raise ApiError(403, "current password is wrong")
+        with self.db.transaction():
+            self.db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new_password), p.id))
+            ended = self._end_other_sessions(p, p.id)
+        self._log(ctx, "profile.password_change", object_type="user", object_id=p.username,
+                  details={"other_sessions_ended": ended})
+        return 200, {"ok": True}
+
+    def _end_other_sessions(self, principal, user_id):
+        """Delete the sessions of ``user_id`` except the caller's current one. Returns the count."""
+        keep = principal.session_hash if principal.id == user_id else None
+        if keep:
+            cur = self.db.execute("DELETE FROM sessions WHERE user_id = ? AND session_hash != ?", (user_id, keep))
+        else:
+            cur = self.db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        return cur.rowcount
 
     def login(self, ctx):
         """Returns (session_token, csrf_token, user_dict) or raises 401/403."""
@@ -1152,8 +1255,11 @@ class Api:
             )
             if "teams" in body:
                 self._set_user_teams(row["id"], body["teams"], row["tenant_id"])
-            if not active or "password" in body:
+            if not active:
                 self.db.execute("DELETE FROM sessions WHERE user_id = ?", (row["id"],))
+            elif "password" in body:
+                # own account: keep the session making this request, end all others
+                self._end_other_sessions(p, row["id"])
         after = self._user_dict(self._load_user(ctx, username))
         changes = {k: {"old": before[k], "new": after[k]}
                    for k in ("display_name", "email", "role", "active", "teams") if before[k] != after[k]}

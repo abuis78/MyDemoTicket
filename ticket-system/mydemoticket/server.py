@@ -39,6 +39,8 @@ ROUTES = [
     ("POST", r"/auth/logout", "_logout", True),
     ("POST", r"/auth/tenant", "_switch_tenant", True),
     ("GET", r"/me", "me", True),
+    ("PATCH", r"/me", "patch_me", True),
+    ("POST", r"/me/password", "change_own_password", True),
     ("GET", r"/tenants", "list_tenants", True),
     ("POST", r"/tenants", "create_tenant", True),
     ("GET", r"/tenants/(?P<slug>[^/]+)", "get_tenant", True),
