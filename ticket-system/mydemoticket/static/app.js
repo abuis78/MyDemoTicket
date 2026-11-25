@@ -399,6 +399,7 @@
     else if (r.path === "/admin/audit") { nav = "audit"; viewAudit(); }
     else if (r.path === "/admin/tenants") { nav = "tenants"; viewTenants(); }
     else if (r.path === "/reports") { nav = "reports"; viewReports(r.params); }
+    else if (r.path === "/profile") { nav = ""; viewProfile(); }
     else {
       if (r.params.mine) nav = "mine";
       else if (r.params.unassigned) nav = "unassigned";
@@ -827,6 +828,96 @@
     if (v === null || v === undefined || v === "") return t("journal.empty_value");
     if (typeof v === "object") return JSON.stringify(v);
     return String(v);
+  }
+
+  // ---------------------------------------------------------------- profile
+  var THEMES = ["system", "light", "dark"];
+  var MIN_PASSWORD = 8;
+
+  // Returns the i18n key of the problem with a new password (typed twice), or null when it is fine.
+  function passwordProblem(first, second) {
+    if (first.length < MIN_PASSWORD) return "pw.too_short";
+    if (first !== second) return "pw.mismatch";
+    return null;
+  }
+
+  function browserTimeZone() {
+    try { return Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) { return ""; }
+  }
+
+  // IANA time zone picker: a select when the browser can list the zones, else a text input. "" = browser default.
+  function timeZoneControl(id, current) {
+    var zones = [];
+    try { if (Intl.supportedValuesOf) zones = Intl.supportedValuesOf("timeZone"); } catch (e) { zones = []; }
+    if (!zones.length) {
+      return h("input", { id: id, value: current, placeholder: t("profile.tz_placeholder"),
+        "aria-describedby": id + "-hint" });
+    }
+    if (current && zones.indexOf(current) < 0) zones = [current].concat(zones);
+    return select(id, zones, current, t("profile.tz_browser", { tz: browserTimeZone() || "-" }));
+  }
+
+  function viewProfile() {
+    var me = session.me;
+    var tenant = me.active_tenant || me.tenant || {};
+    var display = h("input", { id: "p-display", value: me.display_name || "", required: true, maxlength: 200,
+      autocomplete: "name" });
+    var email = h("input", { id: "p-email", type: "email", value: me.email || "", autocomplete: "email" });
+    var tz = timeZoneControl("p-tz", me.timezone || "");
+    var theme = select("p-theme", THEMES.map(function (x) { return [x, t("theme." + x)]; }), me.theme || themePref);
+    var lang = select("p-lang", I18N.supported.map(function (l) { return [l, t("lang." + l)]; }),
+      me.language || I18N.lang);
+    var profileForm = h("form", {
+      class: "panel-body form-grid", onsubmit: function (ev) {
+        ev.preventDefault();
+        var body = { display_name: display.value.trim(), email: email.value.trim(), timezone: tz.value.trim(),
+          theme: theme.value, language: lang.value };
+        api("PATCH", "/me", body).then(function (updated) {
+          return applyMe(updated).then(function () { toast(t("profile.saved")); viewProfile(); });
+        }).catch(fail);
+      }
+    },
+      field(t("profile.username"), h("input", { id: "p-user", value: me.username, disabled: true })),
+      field(t("profile.role"), h("input", { id: "p-role", value: roleLabel(me.role), disabled: true })),
+      field(t("profile.display_name"), display, { required: true }),
+      field(t("profile.email"), email),
+      field(t("profile.timezone"), tz),
+      field(t("profile.theme"), theme),
+      field(t("profile.language"), lang),
+      tenant.name ? field(t("profile.tenant"), h("input", { id: "p-tenant", value: tenant.name, disabled: true })) : null,
+      h("div", { class: "wide muted", id: "p-tz-hint", text: t("profile.tz_hint") }),
+      h("div", { class: "wide" }, h("button", { class: "primary", type: "submit" }, t("profile.save"))));
+
+    var current = h("input", { id: "pw-current", type: "password", autocomplete: "current-password", required: true });
+    var next = h("input", { id: "pw-new", type: "password", autocomplete: "new-password", required: true,
+      "aria-describedby": "pw-hint" });
+    var repeat = h("input", { id: "pw-repeat", type: "password", autocomplete: "new-password", required: true });
+    var message = h("div", { class: "wide error", role: "alert" });
+    var pwForm = h("form", {
+      class: "panel-body form-grid", onsubmit: function (ev) {
+        ev.preventDefault();
+        message.textContent = "";
+        var problem = passwordProblem(next.value, repeat.value);
+        if (problem) { message.textContent = t(problem); next.focus(); return; }
+        api("POST", "/me/password", { current_password: current.value, new_password: next.value }).then(function () {
+          current.value = next.value = repeat.value = "";
+          toast(t("pw.changed"));
+        }).catch(function (err) {
+          if (err && err.status === 401) { fail(err); return; }
+          message.textContent = err && err.status === 403 ? t("pw.wrong_current") : errorText(err);
+        });
+      }
+    },
+      field(t("pw.current"), current, { required: true, wide: true }),
+      field(t("pw.new"), next, { required: true }), field(t("pw.repeat"), repeat, { required: true }),
+      h("div", { class: "wide muted", id: "pw-hint", text: t("pw.hint") }),
+      message,
+      h("div", { class: "wide" }, h("button", { class: "primary", type: "submit" }, t("pw.change"))));
+
+    render(
+      h("div", { class: "panel" }, h("div", { class: "panel-head" }, h("h1", { text: t("profile.title") })), profileForm),
+      h("div", { class: "panel" }, h("div", { class: "panel-head" }, h("h2", { text: t("pw.change") })), pwForm));
+    display.focus();
   }
 
   // ----------------------------------------------------------------- admin
