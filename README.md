@@ -17,7 +17,7 @@ Claude Code / Claude Desktop and installers for a Linux server or AWS EC2.
 | Journal | Entry types `comment` (visible to the caller), `work_note` (internal), `summary` (AI or resolution summary, visible like a comment) and `audit` (field changes); optional `author` for comments written by an integration on behalf of a person |
 | Custom fields | Per tenant: `string`, `number`, `boolean`, `choice`, `date`; four demo fields are seeded |
 | Cross references | `external_refs` (e.g. `soar_container_id`, `es_finding_id`, `es_investigation_id`), searchable with `GET /tickets?external_ref.<key>=<value>` |
-| Roles | `platform_admin`, `admin`, `agent`, `integration`, `requester` |
+| Roles | Built-in `platform_admin`, `admin`, `agent`, `integration`, `requester` and analyst roles `analyst_l1`, `analyst_l2`, `soc_lead`, `read_only`; custom roles per tenant from analyst permissions (`#/admin/roles`) |
 | Teams | Per tenant, used for assignment and agent permissions |
 | Tenants | One database, strict per-tenant isolation; default tenant `soc-games` |
 | Reports | `GET /api/v1/reports/summary` (counts by state, priority, team, MTTR) and a Reports page in the UI |
@@ -26,7 +26,7 @@ Claude Code / Claude Desktop and installers for a Linux server or AWS EC2.
 | SOAR app | 10 actions incl. `on poll` (`soar-app/`) |
 | SOAR playbooks | `mydemoticket_es_mirror` (ticket → ES status and notes), `mydemoticket_ticket_from_es` (ES notable → ticket) (`soar-playbooks/`) |
 | MCP server | Claude Code / Claude Desktop tools for tickets, journals, reports (`mcp-server/`) |
-| Web UI | Ticket list and filters, ticket detail with tabs (Work notes, Comments, Resolution report, Audit trail, History), admin pages for users, teams, custom fields, webhooks, audit status and tenants |
+| Web UI | German and English; ticket list and filters, ticket detail with tabs (Work notes, Comments, Resolution report, Audit trail, History), own profile (click on your name: display name, e-mail, password, time zone, light/dark theme, language), admin pages for users, roles, teams, custom fields, webhooks, audit status with the Splunk HEC connection, and tenants |
 
 ## Architecture
 
