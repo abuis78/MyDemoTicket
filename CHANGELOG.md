@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.2.0
+
+### Ticket system
+
+- ES + SOAR pairing wizard (admin page `#/admin/pairing`, permission `pairing.manage` for admin
+  and platform admin, not grantable): `GET /pairing`, `POST /pairing/check`,
+  `POST /pairing/apply` set up integration user + token, `soar` webhook, SOAR label, the
+  MyDemoTicket SOAR app, its asset and both playbooks (active) in one repeatable run, with a
+  result per step; tokens are never returned or logged.
+- Deploy: the AWS bundle and `deploy/install.sh` ship `soar-app/mydemoticket` and
+  `soar-playbooks` for the wizard (`MYDEMOTICKET_SOAR_BUNDLE_DIR` overrides the location,
+  `MYDEMOTICKET_PUBLIC_URL` sets the default ticket base URL).
+
 ## 1.1.0 – 2026-11-25
 
 | Component | Version |
