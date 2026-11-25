@@ -9,7 +9,11 @@ import urllib.parse
 from . import __version__
 from .auth import (
     ADMIN_ROLES,
-    ROLES,
+    BUILTIN_ROLE_INFO,
+    BUILTIN_ROLE_PERMISSIONS,
+    BUILTIN_ROLES,
+    GRANTABLE_PERMISSIONS,
+    PERMISSIONS,
     AuthError,
     can_modify_ticket,
     can_read_ticket,
@@ -72,6 +76,7 @@ TICKET_READONLY = ("id", "number", "created_at", "updated_at", "resolved_at")
 REQUESTER_CREATE_FIELDS = ("short_description", "description", "priority", "category", "custom_fields")
 
 FIELD_NAME_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+ROLE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 EXTERNAL_REF_PREFIX = "external_ref."
 MAX_AUTHOR = 64
@@ -1187,9 +1192,9 @@ class Api:
         if not isinstance(username, str) or not USERNAME_RE.match(username):
             raise ApiError(422, "'username' must match [A-Za-z0-9_.@-]{1,64}")
         role = body.get("role")
-        if role not in ROLES:
-            raise ApiError(422, "'role' must be one of: %s" % ", ".join(ROLES))
+        self._check_role_name(role)
         tenant_id = self._target_tenant_for_new_user(ctx, body, role)
+        self._check_role(role, tenant_id)
         display = _text(body.get("display_name"), "display_name", max_len=200) or username
         email = _text(body.get("email"), "email", max_len=200)
         password = self._password(body["password"]) if body.get("password") is not None else None
@@ -1213,6 +1218,23 @@ class Api:
                            "password_set": password is not None})
         return 201, user
 
+    @staticmethod
+    def _check_role_name(role):
+        if role in BUILTIN_ROLES:
+            return
+        if not isinstance(role, str) or not ROLE_NAME_RE.match(role):
+            raise ApiError(422, "'role' must be one of: %s or a custom role of the tenant"
+                           % ", ".join(BUILTIN_ROLES))
+
+    def _check_role(self, role, tenant_id):
+        """Built-in role, or a custom role of the user's tenant."""
+        if role in BUILTIN_ROLES:
+            return
+        if tenant_id is None or self.db.query_one(
+                "SELECT 1 FROM roles WHERE tenant_id = ? AND name = ?", (tenant_id, role)) is None:
+            raise ApiError(422, "unknown role '%s' (built-in: %s; or a custom role of the user's tenant)"
+                           % (role, ", ".join(BUILTIN_ROLES)))
+
     def _active_platform_admins(self):
         return self.db.query_one(
             "SELECT COUNT(*) AS n FROM users WHERE role = 'platform_admin' AND active = 1"
@@ -1229,8 +1251,9 @@ class Api:
             if key not in ("display_name", "email", "role", "password", "teams", "active"):
                 raise ApiError(422, "unknown field '%s'" % key)
         role = body.get("role", row["role"])
-        if role not in ROLES:
-            raise ApiError(422, "'role' must be one of: %s" % ", ".join(ROLES))
+        if role != row["role"]:
+            self._check_role_name(role)
+            self._check_role(role, row["tenant_id"])
         if role == "platform_admin" and not p.is_platform_admin:
             raise _forbidden("only platform admins may grant the role platform_admin")
         active = _bool(body["active"], "active") if "active" in body else bool(row["active"])
@@ -1397,6 +1420,122 @@ class Api:
         self._log(ctx, "team.member_remove", object_type="team", object_id=name,
                   details={"username": username})
         return 200, self._team_dict(team)
+
+    # =====================================================================
+    # permissions & roles
+    # =====================================================================
+    def list_permissions(self, ctx):
+        require_permission(ctx.principal, "roles.manage")
+        return 200, [{"name": name, "grantable": name in GRANTABLE_PERMISSIONS} for name in PERMISSIONS]
+
+    def _role_users(self, ctx, name):
+        if name == "platform_admin":
+            sql, params = "SELECT COUNT(*) AS n FROM users WHERE role = ? AND tenant_id IS NULL", (name,)
+        else:
+            sql, params = "SELECT COUNT(*) AS n FROM users WHERE role = ? AND tenant_id = ?", (name, self._tid(ctx))
+        return self.db.query_one(sql, params)["n"]
+
+    def _builtin_role_dict(self, ctx, name):
+        label, description = BUILTIN_ROLE_INFO[name]
+        return {"name": name, "label": label, "description": description, "builtin": True,
+                "permissions": sorted(BUILTIN_ROLE_PERMISSIONS[name]), "users": self._role_users(ctx, name)}
+
+    def _custom_role_dict(self, ctx, row):
+        perms = [p for p in loads(row["permissions"], []) if p in GRANTABLE_PERMISSIONS]
+        return {"name": row["name"], "label": row["label"], "description": row["description"], "builtin": False,
+                "permissions": sorted(perms), "users": self._role_users(ctx, row["name"])}
+
+    def _load_role(self, ctx, name):
+        row = self.db.query_one("SELECT * FROM roles WHERE tenant_id = ? AND name = ?", (self._tid(ctx), name))
+        if row is None:
+            raise ApiError(404, "role not found")
+        return row
+
+    @staticmethod
+    def _role_permissions(value):
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ApiError(422, "'permissions' must be a list of permission names")
+        for name in value:
+            if name not in PERMISSIONS:
+                raise ApiError(422, "unknown permission '%s'" % name)
+            if name not in GRANTABLE_PERMISSIONS:
+                raise ApiError(422, "permission '%s' cannot be granted to custom roles" % name)
+        return sorted(set(value))
+
+    def list_roles(self, ctx):
+        p = ctx.principal
+        require_permission(p, "roles.manage")
+        roles = [self._builtin_role_dict(ctx, name) for name in BUILTIN_ROLES
+                 if name != "platform_admin" or p.is_platform_admin]
+        rows = self.db.query("SELECT * FROM roles WHERE tenant_id = ? ORDER BY name", (self._tid(ctx),))
+        return 200, roles + [self._custom_role_dict(ctx, r) for r in rows]
+
+    def create_role(self, ctx):
+        require_permission(ctx.principal, "roles.manage")
+        body = _require_obj(ctx.body)
+        unknown = set(body) - {"name", "label", "description", "permissions"}
+        if unknown:
+            raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])
+        name = body.get("name")
+        if not isinstance(name, str) or not ROLE_NAME_RE.match(name):
+            raise ApiError(422, "'name' must match [a-z][a-z0-9_]{1,31}")
+        if name in BUILTIN_ROLES:
+            raise ApiError(422, "'%s' is a built-in role" % name)
+        label = _text(body.get("label"), "label", max_len=100).strip() or name
+        description = _text(body.get("description"), "description", max_len=500)
+        permissions = self._role_permissions(body.get("permissions", []))
+        tid = self._tid(ctx)
+        if self.db.query_one("SELECT 1 FROM roles WHERE tenant_id = ? AND name = ?", (tid, name)):
+            raise ApiError(409, "role '%s' already exists" % name)
+        self.db.execute(
+            "INSERT INTO roles(tenant_id, name, label, description, permissions, created_at) "
+            "VALUES(?, ?, ?, ?, ?, ?)",
+            (tid, name, label, description, json.dumps(permissions), utcnow()),
+        )
+        role = self._custom_role_dict(ctx, self._load_role(ctx, name))
+        self._log(ctx, "role.create", object_type="role", object_id=name,
+                  details={"label": label, "permissions": permissions})
+        return 201, role
+
+    def patch_role(self, ctx, name):
+        require_permission(ctx.principal, "roles.manage")
+        body = _require_obj(ctx.body)
+        if name in BUILTIN_ROLES:
+            raise ApiError(422, "built-in roles are read-only")
+        row = self._load_role(ctx, name)
+        for key in body:
+            if key in ("name", "builtin", "users"):
+                raise ApiError(422, "'%s' is read-only" % key)
+            if key not in ("label", "description", "permissions"):
+                raise ApiError(422, "unknown field '%s'" % key)
+        before = self._custom_role_dict(ctx, row)
+        label = (_text(body["label"], "label", max_len=100).strip() or name) if "label" in body else row["label"]
+        description = _text(body["description"], "description", max_len=500) if "description" in body \
+            else row["description"]
+        permissions = self._role_permissions(body["permissions"]) if "permissions" in body \
+            else before["permissions"]
+        self.db.execute("UPDATE roles SET label = ?, description = ?, permissions = ? WHERE id = ?",
+                        (label, description, json.dumps(permissions), row["id"]))
+        after = self._custom_role_dict(ctx, self._load_role(ctx, name))
+        changes = {k: {"old": before[k], "new": after[k]} for k in ("label", "description", "permissions")
+                   if before[k] != after[k]}
+        if changes:
+            self._log(ctx, "role.update", object_type="role", object_id=name,
+                      details={"changed": sorted(changes), "changes": changes})
+        return 200, after
+
+    def delete_role(self, ctx, name):
+        require_permission(ctx.principal, "roles.manage")
+        if name in BUILTIN_ROLES:
+            raise ApiError(422, "built-in roles are read-only")
+        row = self._load_role(ctx, name)
+        users = self._role_users(ctx, name)
+        if users:
+            raise ApiError(409, "role '%s' is still assigned to %d user(s)" % (name, users))
+        self.db.execute("DELETE FROM roles WHERE id = ?", (row["id"],))
+        self._log(ctx, "role.delete", object_type="role", object_id=name,
+                  details={"permissions": sorted(loads(row["permissions"], []))})
+        return 204, None
 
     # =====================================================================
     # webhooks
