@@ -26,7 +26,7 @@
   // Permissions of the built-in roles, used only when /me has no "permissions" list (older server).
   var ALL_PERMISSIONS = ["tickets.read_all", "tickets.create", "tickets.update_own", "tickets.update_all",
     "tickets.comment", "tickets.work_note", "tickets.close", "reports.view", "users.manage", "roles.manage",
-    "teams.manage", "fields.manage", "webhooks.manage", "tenants.manage", "splunk.manage"];
+    "teams.manage", "fields.manage", "webhooks.manage", "tenants.manage", "splunk.manage", "pairing.manage"];
   var FALLBACK_PERMISSIONS = {
     platform_admin: ALL_PERMISSIONS,
     admin: ALL_PERMISSIONS.filter(function (p) { return p !== "tenants.manage" && p !== "splunk.manage"; }),
