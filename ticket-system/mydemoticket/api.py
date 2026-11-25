@@ -3,6 +3,7 @@
 import datetime
 import json
 import re
+import sys
 import unicodedata
 import urllib.parse
 
@@ -1062,6 +1063,11 @@ class Api(PairingMixin):
                     self._log(ctx, "access.denied", outcome="denied", object_type="ticket", object_id=number,
                               details={"method": "PATCH", "path": "/api/v1/tickets/%s" % number[:64],
                                        "status": exc.status, "reason": exc.message, "bulk": True})
+                continue
+            except Exception as exc:  # one broken ticket must not abort the rest of the bulk run
+                sys.stderr.write("bulk update %s: internal error (%s)\n" % (number[:64], type(exc).__name__))
+                results.append({"number": number, "ok": False, "status": 500, "error": "internal error"})
+                failed.append({"number": number, "status": 500})
                 continue
             changed += 1 if diff else 0
             results.append({"number": ticket["number"], "ok": True, "status": 200, "changed": bool(diff)})

@@ -1,8 +1,11 @@
 """Multi-value list filters (GET /tickets) and bulk editing (POST /tickets/bulk)."""
 
+import contextlib
+import io
 import json
 import time
 import unittest
+import unittest.mock
 
 from helpers import Receiver, ServerTestCase
 from test_webhooks import ALL_EVENTS, SoarMock
@@ -155,6 +158,33 @@ class BulkUpdateTest(ServerTestCase):
         self.assertEqual(summary["details"]["failures"],
                          [{"number": closed["number"], "status": 409}, {"number": "TKT9999999", "status": 404}])
         self.assertEqual(len(self.audit.find("ticket.state_change")), 1)
+
+    def test_unexpected_error_for_one_ticket_does_not_stop_others(self):
+        a, b, c = (self.create_ticket(priority=3) for _ in range(3))
+        real = self.app.api._apply_patch
+
+        def flaky(ctx, number, body):
+            if number == b["number"]:
+                raise RuntimeError("boom secret-detail")
+            return real(ctx, number, body)
+
+        self.audit.clear()
+        stderr = io.StringIO()
+        with unittest.mock.patch.object(self.app.api, "_apply_patch", side_effect=flaky), \
+                contextlib.redirect_stderr(stderr):
+            resp = self.bulk([a["number"], b["number"], c["number"]], {"priority": 1})
+        self.assertEqual(resp.status, 200, resp)
+        self.assertEqual(resp.json["results"], [
+            {"number": a["number"], "ok": True, "status": 200, "changed": True},
+            {"number": b["number"], "ok": False, "status": 500, "error": "internal error"},
+            {"number": c["number"], "ok": True, "status": 200, "changed": True}])
+        self.assertNotIn("boom", resp.raw.decode())
+        self.assertNotIn("Traceback", resp.raw.decode())
+        self.assertIn("RuntimeError", stderr.getvalue())
+        self.assertEqual([self.admin.get("/tickets/" + t["number"]).json["priority"] for t in (a, b, c)], [1, 3, 1])
+        summary = self.audit.find("ticket.bulk_update")[0]
+        self.assertEqual((summary["details"]["ok"], summary["details"]["failed"]), (2, 1))
+        self.assertEqual(summary["details"]["failures"], [{"number": b["number"], "status": 500}])
 
     def test_close_notes_required_for_resolve(self):
         a, b = self.create_ticket(), self.create_ticket()
