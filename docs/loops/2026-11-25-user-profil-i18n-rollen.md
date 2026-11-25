@@ -1,4 +1,4 @@
-Versuch: 1/5
+Versuch: 2/5
 Punkte: 7/9
 
 # Loop-Protokoll: Benutzerverwaltung, Profil, DE/EN, Rollenverwaltung, Splunk-Verbindung (MyDemoTicket)
@@ -57,6 +57,8 @@ Ausgelegte Spec (verbindlich für die Agenten):
 - Agent C Integration (UI gegen echten Server): effort medium.
 - Inspektor Versuch 1: model sonnet, effort medium.
 - Protokoll-Nachtrag (dieser Eintrag): model haiku, effort medium. Hochgestuft von low, weil der Inspektor im vorherigen Loop den Protokollpunkt bei low nicht bestanden hat. Regel aus Loop 2026-11-24 übernommen: eine Stufe hoch, nie herunter.
+- Versuch 2 · Protokoll-Agent: model haiku, effort medium.
+- Versuch 2 · Inspektor: model sonnet, effort medium.
 
 ## Annahmen
 1. Default-Sprache für bestehende und neue User ist „de“, weil Andreas Deutsch nutzt. Die Login-Seite nimmt localStorage bzw. die Browsersprache.
@@ -68,6 +70,8 @@ Ausgelegte Spec (verbindlich für die Agenten):
 7. `/me` liefert zusätzlich `role_label` (nicht im Vertrag v4). Damit sehen Benutzer mit eigener Rolle ihren Rollennamen.
 8. Server-Fehlermeldungen (422-Texte) bleiben englisch, wie der Server sie liefert. UI-eigene Texte sind übersetzt.
 9. Der PR wird gesquasht. Dabei verschwindet der Merge-Commit des UI-Worktrees.
+10. Live-Prüfung läuft über die API, nicht im echten Browser. Die UI-Abläufe sind lokal gegen den echten Server belegt (88 Prüfungen).
+11. Die temporären Test-User (loopcheck_admin_6634c3, loopcheck_user_6634c3) bleiben deaktiviert im Mandanten soc-games. Löschen von Usern gibt es nicht.
 
 ## Diagnose
 Nachtrag „User anlegen klappt nicht“:
@@ -80,10 +84,21 @@ Nachtrag „User anlegen klappt nicht“:
 |---|---|---|---|---|
 | ~06:55 | Orchestrator | mcp__splunk-socgames__splunk_run_query (3 Abfragen) | splunk.soc-games.com, Index mydemoticket | Fehler beim User-Anlegen finden – lesend |
 | ~06:55 | Orchestrator | Bash curl POST https://ticket.soc-games.com/api/v1/auth/login als admin | ticket.soc-games.com | Prüfen, ob das gespeicherte Admin-Passwort gilt (HTTP 200). Passwort aus Keychain, nicht ausgegeben |
-| ~08:10 | Agent | Bash git push origin feature/user-profile-i18n-roles | GitHub (origin) | Feature-Branch veröffentlichen |
-| nach Push | Agent | Bash gh pr create → https://github.com/abuis78/MyDemoTicket/pull/18 | GitHub | PR für das Feature anlegen |
-| – | Agent | Bash aws sts get-caller-identity --profile janus-env2 | AWS (Account soc-games) | Anmeldung für den Deploy prüfen. Ergebnis: SSO abgelaufen |
+| ~08:10 | Orchestrator | Bash git push origin feature/user-profile-i18n-roles | GitHub (origin) | Feature-Branch veröffentlichen |
+| nach Push | Orchestrator | Bash gh pr create → https://github.com/abuis78/MyDemoTicket/pull/18 | GitHub | PR für das Feature anlegen |
+| – | Orchestrator | Bash aws sts get-caller-identity --profile janus-env2 | AWS (Account soc-games) | Anmeldung für den Deploy prüfen. Ergebnis: SSO abgelaufen |
 | – | Inspektor | Bash curl https://ticket.soc-games.com/api/v1/health | ticket.soc-games.com | Live-Health prüfen (lesend) |
+| ~08:05 | Andreas | Bash aws sso login --profile janus-env2 | AWS (Account soc-games) | SSO-Anmeldung erneuert (selbst ausgeführt) |
+| – | Orchestrator | Bash git push (Protokoll-Commit 56fa2c7) | GitHub (origin) | Protokoll-Stand veröffentlichen |
+| – | Orchestrator | Bash gh pr merge 18 --squash | GitHub | PR #18 squash-merged nach main 4e7c57b |
+| – | Orchestrator | Bash git push origin --delete feature/user-profile-i18n-roles | GitHub (origin) | Remote-Feature-Branch löschen. Lokale Branches nicht gelöscht (squash-gemergt, `git branch -d` verweigert; -D verboten) |
+| – | Orchestrator | Bash (Worktree entfernen) | lokal | UI-Worktree /Users/abuis/git/MyDemoTicket-ui entfernt |
+| – | Orchestrator | AWS SSM via deploy/aws/backup.sh | i-0d33324e98981cda8 | Backup vor Deploy. Ergebnis: "backup ok: /var/lib/mydemoticket.bak-20261125T070825Z" |
+| – | Orchestrator | Bash deploy/aws/deploy.sh (S3-Bundle 95434 Bytes bei 4e7c57b, SSM-Parameter) | AWS S3 / SSM, i-0d33324e98981cda8 | Deploy von 4e7c57b |
+| – | Orchestrator | Bash aws ec2 reboot-instances --instance-ids i-0d33324e98981cda8 | AWS EC2 | Neustart, damit 1.1.0 läuft |
+| – | Orchestrator | Bash curl https://ticket.soc-games.com/api/v1/health | ticket.soc-games.com | Health nach Deploy: {"status": "ok", "version": "1.1.0"} |
+| – | Orchestrator | Bash Scratchpad live110.py (Python urllib, Admin-API-Token aus Keychain, nicht ausgegeben) | https://ticket.soc-games.com | Live-Prüfung: "LIVE: 17/17 passed". Ein erster Lauf scheiterte am Skript (fehlendes "tenant" → 400), dabei nichts angelegt |
+| – | Orchestrator | Bash (Live-API) | ticket.soc-games.com | Zwei temporäre Test-User deaktiviert (loopcheck_admin_6634c3, loopcheck_user_6634c3) |
 
 ## Versuch 1
 - Agent A (Backend), Commits: 2cf2823, c4ab9e4, 8fcd2f7, 13eec9d, e137744, b650759.
@@ -107,6 +122,28 @@ Nachtrag „User anlegen klappt nicht“:
   - Server-Validierungstexte erscheinen in der UI englisch.
   - Platzhalter „Search tickets" steht als Markup-Fallback in `index.html:12` und wird zur Laufzeit übersetzt.
 
+## Versuch 2 (Deploy + Live)
+Alle Schritte vom Orchestrator am 2026-11-25, außer wo anders vermerkt. Details siehe „Externe Werkzeuge".
+- Start Versuch 2: ca. 08:00 CET. Andreas hat sich um ca. 08:05 selbst per `aws sso login --profile janus-env2` angemeldet.
+- Git: Protokoll-Commit 56fa2c7 gepusht. `gh pr merge 18 --squash` → main 4e7c57b. Remote-Branch `feature/user-profile-i18n-roles` gelöscht. UI-Worktree /Users/abuis/git/MyDemoTicket-ui entfernt. Lokale Branches nicht gelöscht (squash-gemergt, `git branch -d` verweigert; `-D` ist verboten).
+- Backup (AWS SSM, deploy/aws/backup.sh) auf i-0d33324e98981cda8: "backup ok: /var/lib/mydemoticket.bak-20261125T070825Z".
+- Deploy: deploy/aws/deploy.sh (S3-Bundle 95434 Bytes bei 4e7c57b, SSM-Parameter), danach `aws ec2 reboot-instances --instance-ids i-0d33324e98981cda8`.
+- Health: `curl https://ticket.soc-games.com/api/v1/health` → `{"status": "ok", "version": "1.1.0"}`.
+- Live-Prüfung: Skript Scratchpad live110.py (Python urllib, Admin-API-Token aus Keychain, nicht ausgegeben) gegen https://ticket.soc-games.com → "LIVE: 17/17 passed". Geprüft:
+  - `/me` mit language, theme, timezone, permissions
+  - `/roles` mit analyst_l1, analyst_l2, soc_lead, read_only
+  - `/permissions`: 8 vergebbar
+  - `/settings/splunk` ohne Token (source=env, token_set)
+  - Mandant audi: 17 Tickets nach Migration v4
+  - audit/status: HEC failed 0
+  - `/static/i18n.js` ausgeliefert
+  - Original-Bug: temporärer Admin setzt eigenes Passwort, legt danach in derselben Sitzung einen User an → 201
+  - `PATCH /me`
+  - `POST /me/password` mit erhaltener Sitzung
+  - eigene Rolle mit users.manage → 422
+- Aufräumen: die zwei temporären Test-User loopcheck_admin_6634c3 und loopcheck_user_6634c3 deaktiviert (Löschen von Usern gibt es nicht).
+- Ein erster Lauf scheiterte am Skript (fehlendes "tenant" beim Anlegen durch platform_admin → 400). Dabei wurde nichts angelegt.
+
 ## Braucht Andreas
 1. Das Admin-Passwort wurde um 06:46 in der UI geändert. Der Keychain-Eintrag mydemoticket/admin-password ist vermutlich veraltet. Empfehlung: Eintrag mit dem neuen Passwort aktualisieren.
-2. Für den Deploy ggf. `aws sso login --profile janus-env2`.
+2. Bitte die UI im Browser ansehen (Profil, Sprache, Rollen).
