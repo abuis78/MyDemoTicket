@@ -96,7 +96,7 @@ class MigrationV3Test(unittest.TestCase):
         app = self.start()
         try:
             db = app.db
-            self.assertEqual(db.schema_version(), 3)
+            self.assertEqual(db.schema_version(), 4)
             columns = [r["name"] for r in db.query("PRAGMA table_info(journal)")]
             self.assertIn("author", columns)
             for table in TABLES:
