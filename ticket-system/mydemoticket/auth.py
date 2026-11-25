@@ -3,6 +3,7 @@
 import datetime
 import hashlib
 import hmac
+import json
 import os
 import secrets
 
@@ -17,6 +18,73 @@ from .tenants import (
 
 ROLES = ("platform_admin", "admin", "agent", "requester", "integration")
 ADMIN_ROLES = ("platform_admin", "admin")
+ANALYST_ROLES = ("analyst_l1", "analyst_l2", "soc_lead", "read_only")
+BUILTIN_ROLES = ROLES + ANALYST_ROLES
+
+# -- permissions -----------------------------------------------------------
+# Analyst permissions: may be granted to custom roles.
+GRANTABLE_PERMISSIONS = (
+    "tickets.read_all",     # see every ticket of the tenant (without: only tickets I am the caller of)
+    "tickets.create",
+    "tickets.update_own",   # change tickets that are unassigned, assigned to me or to one of my teams
+    "tickets.update_all",   # change any ticket of the tenant
+    "tickets.comment",
+    "tickets.work_note",    # internal work notes and summaries
+    "tickets.close",        # transition to resolved / closed / cancelled
+    "reports.view",
+)
+# Administrative permissions: only built-in roles carry them.
+ADMIN_PERMISSIONS = (
+    "users.manage", "roles.manage", "teams.manage", "fields.manage", "webhooks.manage",
+    "tenants.manage", "splunk.manage",
+)
+PERMISSIONS = GRANTABLE_PERMISSIONS + ADMIN_PERMISSIONS
+
+_ANALYST_L2 = ("tickets.read_all", "tickets.create", "tickets.update_all", "tickets.comment",
+               "tickets.work_note", "tickets.close")
+# Derived 1:1 from the role checks before v1.1.0 (see docs/api.md "Roles and permissions").
+BUILTIN_ROLE_PERMISSIONS = {
+    "platform_admin": PERMISSIONS,
+    "admin": GRANTABLE_PERMISSIONS + tuple(p for p in ADMIN_PERMISSIONS
+                                           if p not in ("tenants.manage", "splunk.manage")),
+    "agent": ("tickets.read_all", "tickets.create", "tickets.update_own", "tickets.comment",
+              "tickets.work_note", "tickets.close", "reports.view"),
+    "integration": _ANALYST_L2 + ("reports.view",),
+    "requester": ("tickets.create", "tickets.comment"),
+    "analyst_l1": ("tickets.read_all", "tickets.create", "tickets.update_own", "tickets.comment",
+                   "tickets.work_note"),
+    "analyst_l2": _ANALYST_L2,
+    "soc_lead": _ANALYST_L2 + ("reports.view",),
+    "read_only": ("tickets.read_all",),
+}
+BUILTIN_ROLE_INFO = {
+    "platform_admin": ("Platform admin", "Manages all tenants, platform admins and the Splunk connection."),
+    "admin": ("Admin", "Manages users, roles, teams, fields and webhooks of a tenant; full ticket access."),
+    "agent": ("Agent", "Works tickets of the own teams (or unassigned), resolves and closes them, sees reports."),
+    "requester": ("Requester", "Raises tickets, sees and comments only on own tickets, may cancel them."),
+    "integration": ("Integration", "API account for Splunk SOAR / ES: full ticket access, no administration."),
+    "analyst_l1": ("Analyst L1", "Reads all tickets, works unassigned and own/team tickets; cannot close."),
+    "analyst_l2": ("Analyst L2", "Reads and works all tickets of the tenant, may resolve, close and cancel."),
+    "soc_lead": ("SOC lead", "Like Analyst L2, plus reports."),
+    "read_only": ("Read only", "Reads all tickets of the tenant, no changes and no comments."),
+}
+
+
+def role_permissions(db, role, tenant_id):
+    """Permission set of ``role`` for a user of ``tenant_id`` (built-in or custom role)."""
+    if role in BUILTIN_ROLE_PERMISSIONS:
+        return frozenset(BUILTIN_ROLE_PERMISSIONS[role])
+    if tenant_id is None or db is None:
+        return frozenset()
+    row = db.query_one("SELECT permissions FROM roles WHERE tenant_id = ? AND name = ?", (tenant_id, role))
+    if row is None:
+        return frozenset()
+    try:
+        perms = json.loads(row["permissions"] or "[]")
+    except ValueError:
+        return frozenset()
+    # defence in depth: a custom role can never carry administrative permissions
+    return frozenset(p for p in perms if p in GRANTABLE_PERMISSIONS)
 
 PBKDF2_ITERATIONS = 200_000
 SESSION_TTL_HOURS = 12
@@ -73,7 +141,8 @@ class Principal:
     ``active_tenant_id`` is the tenant a platform_admin chose in the session.
     """
 
-    def __init__(self, user_row, teams, via, csrf_token=None, active_tenant_id=None):
+    def __init__(self, user_row, teams, via, csrf_token=None, active_tenant_id=None, permissions=None,
+                 session_hash=None):
         self.id = user_row["id"]
         self.username = user_row["username"]
         self.display_name = user_row["display_name"]
@@ -83,11 +152,23 @@ class Principal:
         self.via = via  # "token" or "session"
         self.csrf_token = csrf_token
         self.active_tenant_id = active_tenant_id
+        self.session_hash = session_hash  # hash of the session cookie (None for API tokens)
+        if permissions is None:
+            permissions = BUILTIN_ROLE_PERMISSIONS.get(self.role, ())
+        self.permissions = frozenset(permissions)
+
+    def has(self, permission):
+        return permission in self.permissions
 
     @property
     def is_admin(self):
         """Tenant admin or platform admin (admin rights inside the request's tenant)."""
         return self.role in ADMIN_ROLES
+
+    @property
+    def self_service(self):
+        """Without tickets.read_all a user only sees tickets they are the caller of (requester rules)."""
+        return not self.has("tickets.read_all")
 
     @property
     def is_platform_admin(self):
@@ -114,7 +195,8 @@ def principal_from_token(db, token):
     if row is None or not row["active"]:
         return None
     db.execute("UPDATE api_tokens SET last_used_at = ? WHERE id = ?", (utcnow(), row["token_id"]))
-    return Principal(row, user_teams(db, row["id"]), "token")
+    return Principal(row, user_teams(db, row["id"]), "token",
+                     permissions=role_permissions(db, row["role"], row["tenant_id"]))
 
 
 def create_session(db, user_id):
@@ -144,7 +226,9 @@ def principal_from_session(db, session):
         db.execute("DELETE FROM sessions WHERE session_hash = ?", (hash_token(session),))
         return None
     return Principal(row, user_teams(db, row["id"]), "session", csrf_token=row["csrf_token"],
-                     active_tenant_id=row["active_tenant_id"])
+                     active_tenant_id=row["active_tenant_id"],
+                     permissions=role_permissions(db, row["role"], row["tenant_id"]),
+                     session_hash=hash_token(session))
 
 
 def set_session_tenant(db, session, tenant_id):
@@ -197,18 +281,27 @@ def require_role(principal, *roles):
         raise AuthError(403, "forbidden for role '%s'" % principal.role)
 
 
+def require_permission(principal, permission):
+    if not principal.has(permission):
+        raise AuthError(403, "forbidden for role '%s' (needs %s)" % (principal.role, permission))
+
+
 def can_read_ticket(principal, ticket):
     """Same-tenant check is done by the caller (other tenants' tickets are 404)."""
-    if principal.role in ("platform_admin", "admin", "agent", "integration"):
+    if principal.has("tickets.read_all"):
         return True
     return ticket["caller"] == principal.username
 
 
 def can_modify_ticket(principal, ticket):
-    """Whether the principal may change fields / add work notes on a ticket."""
-    if principal.role in ("platform_admin", "admin", "integration"):
+    """Whether the principal may change fields / add comments and work notes on a ticket.
+
+    tickets.update_all: any ticket. tickets.update_own: unassigned tickets, tickets
+    assigned to the principal and tickets of one of the principal's teams.
+    """
+    if principal.has("tickets.update_all"):
         return True
-    if principal.role == "agent":
+    if principal.has("tickets.update_own"):
         group = ticket["assignment_group"]
         assignee = ticket["assigned_to"]
         if group is None and assignee is None:

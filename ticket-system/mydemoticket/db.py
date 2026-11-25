@@ -191,6 +191,28 @@ MIGRATIONS = [
     """
     ALTER TABLE journal ADD COLUMN author TEXT;
     """,
+    # 4: user profile (time zone, theme, language), custom roles per tenant and
+    # instance-wide settings (Splunk HEC connection). Additive only.
+    """
+    ALTER TABLE users ADD COLUMN timezone TEXT NOT NULL DEFAULT '';
+    ALTER TABLE users ADD COLUMN theme TEXT NOT NULL DEFAULT 'system';
+    ALTER TABLE users ADD COLUMN language TEXT NOT NULL DEFAULT 'de';
+    CREATE TABLE roles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id INTEGER NOT NULL REFERENCES tenants(id),
+        name TEXT NOT NULL,
+        label TEXT NOT NULL DEFAULT '',
+        description TEXT NOT NULL DEFAULT '',
+        permissions TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL,
+        UNIQUE(tenant_id, name)
+    );
+    CREATE TABLE settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL DEFAULT '',
+        updated_at TEXT NOT NULL
+    );
+    """,
 ]
 
 FIRST_TICKET_NUMBER = 1001

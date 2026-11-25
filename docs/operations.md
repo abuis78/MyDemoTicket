@@ -16,6 +16,7 @@ demo environment; use your own.
 | Initial credentials | `<data-dir>/initial-credentials.txt` | Only after the first start; delete after storing |
 | Local audit log | `<data-dir>/logs/audit.log` (+ `.1` … `.5`) | Always written |
 | Service config (option B/C) | `/etc/mydemoticket/env` (0600) | Admin bootstrap and HEC variables; on AWS rewritten from SSM on every boot |
+| Splunk connection set in the UI | table `settings` in the database | Since 1.1.0; wins over the `MYDEMOTICKET_HEC_*` variables; moves with the database |
 | AWS config | SSM `/$NAME/*`, keychain service `mydemoticket` on your Mac | See [installation.md](installation.md#keychain-items-and-ssm-parameters) |
 | SOAR side | SOAR app, asset (base URL + token), label, playbooks | Not stored in MyDemoTicket |
 | MCP | keychain account `mcp-api-token`, Claude Code registration | Per workstation |
@@ -138,7 +139,7 @@ What has to move:
 | SSM parameters `/$NAME/*` | Written by `deploy.sh` in the target account from the keychain |
 | DNS | Point the host name to the new IP (direct) or ALB (CNAME) |
 | SOAR | Update the asset `base_url` if the host name changed; tokens stay valid when the database moves. Webhook `url`/`secret` are in the database: recreate the webhook if SOAR moved |
-| Splunk | HEC token / URL in the env (B) or keychain + SSM (C) |
+| Splunk | HEC token / URL in the env (B) or keychain + SSM (C); a connection set in the UI lives in the database |
 | MCP | Store `mcp-api-token` in the keychain and run `mcp-server/install.sh` again (absolute path) |
 
 ### Checklist: server → new server (option B)
@@ -194,6 +195,15 @@ Splunk search for webhook problems:
 index=mydemoticket sourcetype=mydemoticket:audit action=webhook.delivery outcome!=success
 | stats count by tenant outcome details.event
 ```
+
+### Web UI for users (1.1.0)
+
+| Task | Where |
+|---|---|
+| Own profile: display name, e-mail, password, time zone, light/dark theme, language (Deutsch/English) | Click on your name top right (`#/profile`); saved on the server, applies at once |
+| Set another user's password (entered twice), edit display name / e-mail, change role | `#/admin/users` |
+| Roles: view all, create / edit / delete custom roles (analyst permissions only) | `#/admin/roles` (admins) |
+| Splunk HEC connection: URL, index, token (write-only), TLS check, on/off, test event | `#/admin/audit` (platform admins); the saved connection wins over `MYDEMOTICKET_HEC_*` and applies without restart. Empty token field keeps the stored token |
 
 ## Troubleshooting
 

@@ -9,7 +9,11 @@ import urllib.parse
 from . import __version__
 from .auth import (
     ADMIN_ROLES,
-    ROLES,
+    BUILTIN_ROLE_INFO,
+    BUILTIN_ROLE_PERMISSIONS,
+    BUILTIN_ROLES,
+    GRANTABLE_PERMISSIONS,
+    PERMISSIONS,
     AuthError,
     can_modify_ticket,
     can_read_ticket,
@@ -18,12 +22,19 @@ from .auth import (
     hash_password,
     hash_token,
     new_token,
+    require_permission,
     require_role,
     set_session_tenant,
     user_teams,
     verify_password,
 )
 from .db import dumps, loads, parse_iso, utcnow
+from .settings import apply_splunk, save_splunk, splunk_config
+
+try:  # Python 3.9+; without zoneinfo only the empty time zone (= browser) is valid
+    import zoneinfo
+except ImportError:  # pragma: no cover
+    zoneinfo = None
 from .tenants import (
     DEFAULT_TENANT_SLUG,
     INDEX_RE,
@@ -51,6 +62,7 @@ TRANSITIONS = {
 }
 PRIORITIES = {1: "critical", 2: "high", 3: "moderate", 4: "low"}
 OPEN_STATES = ("new", "in_progress", "on_hold")
+CLOSING_STATES = ("resolved", "closed", "cancelled")  # transitions that need tickets.close
 UNASSIGNED_TEAM = "(none)"
 FIELD_TYPES = ("string", "number", "boolean", "choice", "date")
 # journal entry types writable via POST /tickets/{number}/comments; summary = AI or resolution
@@ -65,9 +77,14 @@ TICKET_READONLY = ("id", "number", "created_at", "updated_at", "resolved_at")
 REQUESTER_CREATE_FIELDS = ("short_description", "description", "priority", "category", "custom_fields")
 
 FIELD_NAME_RE = re.compile(r"^[a-z0-9_]{1,64}$")
+ROLE_NAME_RE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 USERNAME_RE = re.compile(r"^[A-Za-z0-9_.@-]{1,64}$")
 EXTERNAL_REF_PREFIX = "external_ref."
 MAX_AUTHOR = 64
+THEMES = ("system", "light", "dark")
+LANGUAGES = ("de", "en")
+PROFILE_FIELDS = ("display_name", "email", "timezone", "theme", "language")
+EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+$")
 MAX_TEXT = 100_000
 MAX_LIMIT = 500
 
@@ -153,6 +170,23 @@ def _external_ref_filters(query):
     return where, params
 
 
+def _timezone(value):
+    """'' (use the browser's time zone) or an IANA name loadable via zoneinfo."""
+    if not isinstance(value, str):
+        raise ApiError(422, "'timezone' must be a string")
+    value = value.strip()
+    if not value:
+        return ""
+    error = ApiError(422, "'timezone' must be an IANA time zone name (e.g. Europe/Berlin) or empty")
+    if zoneinfo is None or len(value) > 64 or value.startswith("/") or ".." in value:
+        raise error
+    try:
+        zoneinfo.ZoneInfo(value)
+    except Exception:  # ZoneInfoNotFoundError, ValueError, missing tzdata, ...
+        raise error
+    return value
+
+
 def _bool(value, field):
     if not isinstance(value, bool):
         raise ApiError(422, "'%s' must be a boolean" % field)
@@ -202,6 +236,14 @@ class Api:
     def _require_admin(self, ctx):
         require_role(ctx.principal, *ADMIN_ROLES)
 
+    @staticmethod
+    def _require_write(principal, ticket):
+        """Field changes, comments and work notes of non-self-service users."""
+        if not (principal.has("tickets.update_all") or principal.has("tickets.update_own")):
+            raise _forbidden("forbidden for role '%s' (needs tickets.update_own)" % principal.role)
+        if not can_modify_ticket(principal, ticket):
+            raise _forbidden("ticket is assigned to another team or user")
+
     # =====================================================================
     # misc
     # =====================================================================
@@ -212,6 +254,11 @@ class Api:
         p = ctx.principal
         row = self.db.query_one("SELECT * FROM users WHERE id = ?", (p.id,))
         data = self._user_dict(row)
+        data["timezone"] = row["timezone"]
+        data["theme"] = row["theme"]
+        data["language"] = row["language"]
+        data["permissions"] = sorted(p.permissions)
+        data["role_label"] = self._role_label(row["role"], row["tenant_id"])
         data["tenant"] = tenant_ref(ctx.tenant)
         if p.is_platform_admin:
             data["active_tenant"] = tenant_ref(ctx.tenant)
@@ -219,6 +266,87 @@ class Api:
         if p.via == "session":
             data["csrf_token"] = p.csrf_token
         return 200, data
+
+    def _role_label(self, role, tenant_id):
+        """Display label of a role; users without roles.manage cannot read /roles for custom labels."""
+        if role in BUILTIN_ROLE_INFO:
+            return BUILTIN_ROLE_INFO[role][0]
+        row = self.db.query_one("SELECT label FROM roles WHERE tenant_id = ? AND name = ?", (tenant_id, role)) \
+            if tenant_id is not None else None
+        return (row["label"] if row is not None else "") or role
+
+    def patch_me(self, ctx):
+        """PATCH /me: the caller changes their own profile."""
+        p = ctx.principal
+        body = _require_obj(ctx.body)
+        unknown = set(body) - set(PROFILE_FIELDS)
+        if unknown:
+            raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])
+        row = self.db.query_one("SELECT * FROM users WHERE id = ?", (p.id,))
+        new = {k: row[k] for k in PROFILE_FIELDS}
+        if "display_name" in body:
+            new["display_name"] = _text(body["display_name"], "display_name", required=True, max_len=200).strip()
+        if "email" in body:
+            email = _text(body["email"], "email", max_len=200).strip()
+            if email and not EMAIL_RE.match(email):
+                raise ApiError(422, "'email' must be an e-mail address or empty")
+            new["email"] = email
+        if "timezone" in body:
+            new["timezone"] = _timezone(body["timezone"])
+        if "theme" in body:
+            if body["theme"] not in THEMES:
+                raise ApiError(422, "'theme' must be one of: %s" % ", ".join(THEMES))
+            new["theme"] = body["theme"]
+        if "language" in body:
+            if body["language"] not in LANGUAGES:
+                raise ApiError(422, "'language' must be one of: %s" % ", ".join(LANGUAGES))
+            new["language"] = body["language"]
+        changes = {k: {"old": row[k], "new": new[k]} for k in PROFILE_FIELDS if row[k] != new[k]}
+        if changes:
+            self.db.execute(
+                "UPDATE users SET display_name = ?, email = ?, timezone = ?, theme = ?, language = ? WHERE id = ?",
+                (new["display_name"], new["email"], new["timezone"], new["theme"], new["language"], p.id),
+            )
+            p.display_name = new["display_name"]
+            self._log(ctx, "profile.update", object_type="user", object_id=p.username,
+                      details={"changed": sorted(changes), "changes": changes})
+        return self.me(ctx)
+
+    def change_own_password(self, ctx):
+        """POST /me/password: keeps the current session, ends all other sessions of the user."""
+        p = ctx.principal
+        body = _require_obj(ctx.body)
+        unknown = set(body) - {"current_password", "new_password"}
+        if unknown:
+            raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])
+        row = self.db.query_one("SELECT * FROM users WHERE id = ?", (p.id,))
+        if not row["password_hash"]:
+            raise ApiError(422, "no password set")
+        current = body.get("current_password")
+        if not isinstance(current, str) or not current:
+            raise ApiError(422, "'current_password' is required")
+        new_password = body.get("new_password")
+        if not isinstance(new_password, str) or len(new_password) < 8:
+            raise ApiError(422, "'new_password' must be a string with at least 8 characters")
+        if not verify_password(current, row["password_hash"]):
+            self._log(ctx, "profile.password_change", outcome="failure", object_type="user",
+                      object_id=p.username, details={"reason": "wrong current password"})
+            raise ApiError(403, "current password is wrong")
+        with self.db.transaction():
+            self.db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (hash_password(new_password), p.id))
+            ended = self._end_other_sessions(p, p.id)
+        self._log(ctx, "profile.password_change", object_type="user", object_id=p.username,
+                  details={"other_sessions_ended": ended})
+        return 200, {"ok": True}
+
+    def _end_other_sessions(self, principal, user_id):
+        """Delete the sessions of ``user_id`` except the caller's current one. Returns the count."""
+        keep = principal.session_hash if principal.id == user_id else None
+        if keep:
+            cur = self.db.execute("DELETE FROM sessions WHERE user_id = ? AND session_hash != ?", (user_id, keep))
+        else:
+            cur = self.db.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
+        return cur.rowcount
 
     def login(self, ctx):
         """Returns (session_token, csrf_token, user_dict) or raises 401/403."""
@@ -290,6 +418,65 @@ class Api:
         return 200, self.audit.stats()
 
     # =====================================================================
+    # Splunk connection (platform_admin)
+    # =====================================================================
+    @staticmethod
+    def _splunk_dict(cfg):
+        return {"hec_url": cfg["hec_url"], "index": cfg["index"], "verify_tls": cfg["verify_tls"],
+                "enabled": cfg["enabled"], "token_set": bool(cfg["token"]), "source": cfg["source"]}
+
+    def get_splunk_settings(self, ctx):
+        require_permission(ctx.principal, "splunk.manage")
+        return 200, self._splunk_dict(splunk_config(self.db))
+
+    def put_splunk_settings(self, ctx):
+        require_permission(ctx.principal, "splunk.manage")
+        body = _require_obj(ctx.body)
+        unknown = set(body) - {"hec_url", "index", "verify_tls", "enabled", "token"}
+        if unknown:
+            raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])
+        current = splunk_config(self.db)
+        url = current["hec_url"]
+        if "hec_url" in body:
+            url = _text(body["hec_url"], "hec_url", max_len=2000).strip()
+            if url and not re.match(r"^https?://[^\s/]+", url, re.IGNORECASE):
+                raise ApiError(422, "'hec_url' must be an http(s) URL or empty")
+        index = current["index"]
+        if "index" in body:
+            index = body["index"] if body["index"] is not None else ""
+            if not isinstance(index, str) or (index and not INDEX_RE.match(index)):
+                raise ApiError(422, "'index' must match [a-z0-9][a-z0-9_-]{0,79} or be empty")
+        verify = _bool(body["verify_tls"], "verify_tls") if "verify_tls" in body else current["verify_tls"]
+        enabled = _bool(body["enabled"], "enabled") if "enabled" in body else current["enabled"]
+        token = body.get("token")
+        if token is not None:
+            if not isinstance(token, str) or len(token) > 500 or any(c.isspace() for c in token):
+                raise ApiError(422, "'token' must be a string without whitespace (max 500 characters)")
+        effective_token = current["token"] if token is None else token
+        if enabled and not (url and effective_token):
+            raise ApiError(422, "'hec_url' and 'token' are required when the connection is enabled")
+        save_splunk(self.db, url, index, verify, enabled, token)
+        apply_splunk(self.db, self.audit)
+        credential = "kept" if token is None else ("cleared" if token == "" else "replaced")
+        self._log(ctx, "settings.splunk_update", object_type="settings", object_id="splunk",
+                  details={"url_host": _url_host(url) if url else None, "index": index or None,
+                           "verify_tls": verify, "enabled": enabled, "credential": credential,
+                           "previous_source": current["source"]})
+        return 200, self._splunk_dict(splunk_config(self.db))
+
+    def test_splunk_settings(self, ctx):
+        p = ctx.principal
+        require_permission(p, "splunk.manage")
+        if not hasattr(self.audit, "send_test"):
+            ok, message = False, "the audit logger in use cannot send to Splunk HEC"
+        else:
+            ok, message = self.audit.send_test(tenant=ctx.tenant["slug"], actor=p.username, role=p.role,
+                                               source=ctx.source, ip=ctx.ip, request_id=ctx.request_id)
+        self._log(ctx, "settings.splunk_test", outcome="success" if ok else "failure", object_type="settings",
+                  object_id="splunk", details={"ok": ok, "message": message})
+        return 200, {"ok": ok, "message": message}
+
+    # =====================================================================
     # tenants (platform_admin)
     # =====================================================================
     def _load_tenant(self, slug):
@@ -321,15 +508,15 @@ class Api:
         return values
 
     def list_tenants(self, ctx):
-        require_role(ctx.principal, "platform_admin")
+        require_permission(ctx.principal, "tenants.manage")
         return 200, [tenant_dict(r) for r in self.db.query("SELECT * FROM tenants ORDER BY slug")]
 
     def get_tenant(self, ctx, slug):
-        require_role(ctx.principal, "platform_admin")
+        require_permission(ctx.principal, "tenants.manage")
         return 200, tenant_dict(self._load_tenant(slug))
 
     def create_tenant(self, ctx):
-        require_role(ctx.principal, "platform_admin")
+        require_permission(ctx.principal, "tenants.manage")
         body = _require_obj(ctx.body)
         unknown = set(body) - {"slug", "name", "active", "soar_url", "splunk_index", "seed"}
         if unknown:
@@ -360,7 +547,7 @@ class Api:
         return 201, tenant_dict(row)
 
     def patch_tenant(self, ctx, slug):
-        require_role(ctx.principal, "platform_admin")
+        require_permission(ctx.principal, "tenants.manage")
         body = _require_obj(ctx.body)
         row = self._load_tenant(slug)
         for key in body:
@@ -394,7 +581,7 @@ class Api:
     # reports
     # =====================================================================
     def reports_summary(self, ctx):
-        require_role(ctx.principal, "platform_admin", "admin", "agent", "integration")  # read-only
+        require_permission(ctx.principal, "reports.view")
         tid = self._tid(ctx)
         where, params = "tenant_id = ?", [tid]
         since_raw = ctx.query.get("since")
@@ -580,7 +767,7 @@ class Api:
     def list_tickets(self, ctx):
         p, q = ctx.principal, ctx.query
         where, params = ["tenant_id = ?"], [self._tid(ctx)]
-        if p.role == "requester":
+        if p.self_service:
             where.append("caller = ?")
             params.append(p.username)
         if q.get("state"):
@@ -645,12 +832,13 @@ class Api:
     def create_ticket(self, ctx):
         p, body = ctx.principal, _require_obj(ctx.body)
         tid = self._tid(ctx)
+        require_permission(p, "tickets.create")
         for key in body:
             if key in TICKET_READONLY:
                 raise ApiError(422, "'%s' is read-only" % key)
             if key not in TICKET_WRITABLE:
                 raise ApiError(422, "unknown field '%s'" % key)
-        if p.role == "requester":
+        if p.self_service:
             extra = [k for k in body if k not in REQUESTER_CREATE_FIELDS]
             if extra:
                 raise _forbidden("requesters may not set: %s" % ", ".join(sorted(extra)))
@@ -665,7 +853,7 @@ class Api:
         category = _text(body.get("category"), "category", max_len=100)
         group = self._check_group(body.get("assignment_group"), tid)
         assignee = self._check_user(body.get("assigned_to"), "assigned_to", tid)
-        caller = p.username if p.role == "requester" else (
+        caller = p.username if p.self_service else (
             self._check_user(body.get("caller"), "caller", tid) or p.username
         )
         custom = self._validate_custom_values(tid, body.get("custom_fields") or {}, creating=True)
@@ -709,11 +897,12 @@ class Api:
                 raise ApiError(422, "'%s' is read-only" % key)
             if key not in TICKET_WRITABLE:
                 raise ApiError(422, "unknown field '%s'" % key)
-        if p.role == "requester":
+        if p.self_service:
             if set(body) - {"state"} or body.get("state") != "cancelled":
                 raise _forbidden("requesters may only cancel their own tickets")
-        elif not can_modify_ticket(p, row):
-            raise _forbidden("ticket is assigned to another team or user")
+            require_permission(p, "tickets.create")
+        else:
+            self._require_write(p, row)
 
         current = self._ticket_dict(row)
         new = dict(current)
@@ -744,6 +933,8 @@ class Api:
             if target not in STATES:
                 raise ApiError(422, "unknown state '%s'" % target)
             if target != current["state"]:
+                if target in CLOSING_STATES and not p.self_service:
+                    require_permission(p, "tickets.close")
                 if target not in TRANSITIONS[current["state"]]:
                     raise ApiError(
                         409, "transition %s -> %s is not allowed" % (current["state"], target)
@@ -843,7 +1034,7 @@ class Api:
     def journal(self, ctx, number):
         row = self._readable_ticket(ctx, number)
         sql = "SELECT * FROM journal WHERE ticket_id = ? AND tenant_id = ?"
-        if ctx.principal.role == "requester":
+        if ctx.principal.self_service:
             sql += " AND type != 'work_note'"
         rows = self.db.query(sql + " ORDER BY id ASC", (row["id"], self._tid(ctx)))
         return 200, [self._journal_dict(r) for r in rows]
@@ -858,11 +1049,13 @@ class Api:
         unknown = set(body) - {"body", "type", "author"}
         if unknown:
             raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])
-        if p.role == "requester":
+        if p.self_service:
             if kind != "comment":
                 raise _forbidden("requesters may only add comments")
-        elif not can_modify_ticket(p, row):
-            raise _forbidden("ticket is assigned to another team or user")
+            require_permission(p, "tickets.comment")
+        else:
+            require_permission(p, "tickets.comment" if kind == "comment" else "tickets.work_note")
+            self._require_write(p, row)
         text = _text(body.get("body"), "body", required=True)
         author = _author(body.get("author"))
         now = utcnow()
@@ -915,7 +1108,7 @@ class Api:
         return value
 
     def create_custom_field(self, ctx):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "fields.manage")
         tid = self._tid(ctx)
         body = _require_obj(ctx.body)
         unknown = set(body) - {"name", "label", "type", "choices", "required"}
@@ -942,7 +1135,7 @@ class Api:
         return 201, self._field_defs(tid)[name]
 
     def patch_custom_field(self, ctx, name):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "fields.manage")
         tid = self._tid(ctx)
         body = _require_obj(ctx.body)
         current = self._field_defs(tid).get(name)
@@ -968,7 +1161,7 @@ class Api:
         return 200, updated
 
     def delete_custom_field(self, ctx, name):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "fields.manage")
         cur = self.db.execute("DELETE FROM custom_field_defs WHERE name = ? AND tenant_id = ?",
                               (name, self._tid(ctx)))
         if cur.rowcount == 0:
@@ -1006,7 +1199,7 @@ class Api:
         return row
 
     def list_users(self, ctx):
-        require_role(ctx.principal, "platform_admin", "admin", "agent", "integration")
+        require_permission(ctx.principal, "tickets.read_all")  # requesters (self-service) do not
         if ctx.principal.is_platform_admin:
             rows = self.db.query("SELECT * FROM users WHERE tenant_id = ? OR tenant_id IS NULL ORDER BY username",
                                  (self._tid(ctx),))
@@ -1059,7 +1252,7 @@ class Api:
         return self._tid(ctx)
 
     def create_user(self, ctx):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "users.manage")
         body = _require_obj(ctx.body)
         unknown = set(body) - {"username", "display_name", "email", "role", "password", "teams", "active", "tenant"}
         if unknown:
@@ -1068,9 +1261,9 @@ class Api:
         if not isinstance(username, str) or not USERNAME_RE.match(username):
             raise ApiError(422, "'username' must match [A-Za-z0-9_.@-]{1,64}")
         role = body.get("role")
-        if role not in ROLES:
-            raise ApiError(422, "'role' must be one of: %s" % ", ".join(ROLES))
+        self._check_role_name(role)
         tenant_id = self._target_tenant_for_new_user(ctx, body, role)
+        self._check_role(role, tenant_id)
         display = _text(body.get("display_name"), "display_name", max_len=200) or username
         email = _text(body.get("email"), "email", max_len=200)
         password = self._password(body["password"]) if body.get("password") is not None else None
@@ -1094,13 +1287,30 @@ class Api:
                            "password_set": password is not None})
         return 201, user
 
+    @staticmethod
+    def _check_role_name(role):
+        if role in BUILTIN_ROLES:
+            return
+        if not isinstance(role, str) or not ROLE_NAME_RE.match(role):
+            raise ApiError(422, "'role' must be one of: %s or a custom role of the tenant"
+                           % ", ".join(BUILTIN_ROLES))
+
+    def _check_role(self, role, tenant_id):
+        """Built-in role, or a custom role of the user's tenant."""
+        if role in BUILTIN_ROLES:
+            return
+        if tenant_id is None or self.db.query_one(
+                "SELECT 1 FROM roles WHERE tenant_id = ? AND name = ?", (tenant_id, role)) is None:
+            raise ApiError(422, "unknown role '%s' (built-in: %s; or a custom role of the user's tenant)"
+                           % (role, ", ".join(BUILTIN_ROLES)))
+
     def _active_platform_admins(self):
         return self.db.query_one(
             "SELECT COUNT(*) AS n FROM users WHERE role = 'platform_admin' AND active = 1"
         )["n"]
 
     def patch_user(self, ctx, username):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "users.manage")
         p = ctx.principal
         body = _require_obj(ctx.body)
         row = self._load_user(ctx, username)
@@ -1110,8 +1320,9 @@ class Api:
             if key not in ("display_name", "email", "role", "password", "teams", "active"):
                 raise ApiError(422, "unknown field '%s'" % key)
         role = body.get("role", row["role"])
-        if role not in ROLES:
-            raise ApiError(422, "'role' must be one of: %s" % ", ".join(ROLES))
+        if role != row["role"]:
+            self._check_role_name(role)
+            self._check_role(role, row["tenant_id"])
         if role == "platform_admin" and not p.is_platform_admin:
             raise _forbidden("only platform admins may grant the role platform_admin")
         active = _bool(body["active"], "active") if "active" in body else bool(row["active"])
@@ -1136,8 +1347,11 @@ class Api:
             )
             if "teams" in body:
                 self._set_user_teams(row["id"], body["teams"], row["tenant_id"])
-            if not active or "password" in body:
+            if not active:
                 self.db.execute("DELETE FROM sessions WHERE user_id = ?", (row["id"],))
+            elif "password" in body:
+                # own account: keep the session making this request, end all others
+                self._end_other_sessions(p, row["id"])
         after = self._user_dict(self._load_user(ctx, username))
         changes = {k: {"old": before[k], "new": after[k]}
                    for k in ("display_name", "email", "role", "active", "teams") if before[k] != after[k]}
@@ -1157,13 +1371,13 @@ class Api:
         }
 
     def list_tokens(self, ctx, username):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "users.manage")
         row = self._load_user(ctx, username)
         rows = self.db.query("SELECT * FROM api_tokens WHERE user_id = ? ORDER BY id", (row["id"],))
         return 200, [self._token_dict(r) for r in rows]
 
     def create_token(self, ctx, username):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "users.manage")
         body = _require_obj(ctx.body)
         row = self._load_user(ctx, username)
         name = _text(body.get("name"), "name", max_len=100) or "api"
@@ -1180,7 +1394,7 @@ class Api:
         return 201, data
 
     def delete_token(self, ctx, username, token_id):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "users.manage")
         row = self._load_user(ctx, username)
         existing = self.db.query_one("SELECT name FROM api_tokens WHERE id = ? AND user_id = ?",
                                      (int(token_id), row["id"]))
@@ -1215,12 +1429,12 @@ class Api:
         return row
 
     def list_teams(self, ctx):
-        require_role(ctx.principal, "platform_admin", "admin", "agent", "integration")
+        require_permission(ctx.principal, "tickets.read_all")  # requesters (self-service) do not
         rows = self.db.query("SELECT * FROM teams WHERE tenant_id = ? ORDER BY name", (self._tid(ctx),))
         return 200, [self._team_dict(r) for r in rows]
 
     def create_team(self, ctx):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "teams.manage")
         tid = self._tid(ctx)
         body = _require_obj(ctx.body)
         unknown = set(body) - {"name", "description", "members"}
@@ -1256,7 +1470,7 @@ class Api:
         return row
 
     def add_team_member(self, ctx, name):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "teams.manage")
         body = _require_obj(ctx.body)
         team = self._load_team(ctx, name)
         user = self._load_user_422(ctx, body.get("username"))
@@ -1268,13 +1482,129 @@ class Api:
         return 200, self._team_dict(team)
 
     def remove_team_member(self, ctx, name, username):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "teams.manage")
         team = self._load_team(ctx, name)
         user = self._load_user(ctx, username)
         self.db.execute("DELETE FROM team_members WHERE team_id = ? AND user_id = ?", (team["id"], user["id"]))
         self._log(ctx, "team.member_remove", object_type="team", object_id=name,
                   details={"username": username})
         return 200, self._team_dict(team)
+
+    # =====================================================================
+    # permissions & roles
+    # =====================================================================
+    def list_permissions(self, ctx):
+        require_permission(ctx.principal, "roles.manage")
+        return 200, [{"name": name, "grantable": name in GRANTABLE_PERMISSIONS} for name in PERMISSIONS]
+
+    def _role_users(self, ctx, name):
+        if name == "platform_admin":
+            sql, params = "SELECT COUNT(*) AS n FROM users WHERE role = ? AND tenant_id IS NULL", (name,)
+        else:
+            sql, params = "SELECT COUNT(*) AS n FROM users WHERE role = ? AND tenant_id = ?", (name, self._tid(ctx))
+        return self.db.query_one(sql, params)["n"]
+
+    def _builtin_role_dict(self, ctx, name):
+        label, description = BUILTIN_ROLE_INFO[name]
+        return {"name": name, "label": label, "description": description, "builtin": True,
+                "permissions": sorted(BUILTIN_ROLE_PERMISSIONS[name]), "users": self._role_users(ctx, name)}
+
+    def _custom_role_dict(self, ctx, row):
+        perms = [p for p in loads(row["permissions"], []) if p in GRANTABLE_PERMISSIONS]
+        return {"name": row["name"], "label": row["label"], "description": row["description"], "builtin": False,
+                "permissions": sorted(perms), "users": self._role_users(ctx, row["name"])}
+
+    def _load_role(self, ctx, name):
+        row = self.db.query_one("SELECT * FROM roles WHERE tenant_id = ? AND name = ?", (self._tid(ctx), name))
+        if row is None:
+            raise ApiError(404, "role not found")
+        return row
+
+    @staticmethod
+    def _role_permissions(value):
+        if not isinstance(value, list) or not all(isinstance(v, str) for v in value):
+            raise ApiError(422, "'permissions' must be a list of permission names")
+        for name in value:
+            if name not in PERMISSIONS:
+                raise ApiError(422, "unknown permission '%s'" % name)
+            if name not in GRANTABLE_PERMISSIONS:
+                raise ApiError(422, "permission '%s' cannot be granted to custom roles" % name)
+        return sorted(set(value))
+
+    def list_roles(self, ctx):
+        p = ctx.principal
+        require_permission(p, "roles.manage")
+        roles = [self._builtin_role_dict(ctx, name) for name in BUILTIN_ROLES
+                 if name != "platform_admin" or p.is_platform_admin]
+        rows = self.db.query("SELECT * FROM roles WHERE tenant_id = ? ORDER BY name", (self._tid(ctx),))
+        return 200, roles + [self._custom_role_dict(ctx, r) for r in rows]
+
+    def create_role(self, ctx):
+        require_permission(ctx.principal, "roles.manage")
+        body = _require_obj(ctx.body)
+        unknown = set(body) - {"name", "label", "description", "permissions"}
+        if unknown:
+            raise ApiError(422, "unknown field '%s'" % sorted(unknown)[0])
+        name = body.get("name")
+        if not isinstance(name, str) or not ROLE_NAME_RE.match(name):
+            raise ApiError(422, "'name' must match [a-z][a-z0-9_]{1,31}")
+        if name in BUILTIN_ROLES:
+            raise ApiError(422, "'%s' is a built-in role" % name)
+        label = _text(body.get("label"), "label", max_len=100).strip() or name
+        description = _text(body.get("description"), "description", max_len=500)
+        permissions = self._role_permissions(body.get("permissions", []))
+        tid = self._tid(ctx)
+        if self.db.query_one("SELECT 1 FROM roles WHERE tenant_id = ? AND name = ?", (tid, name)):
+            raise ApiError(409, "role '%s' already exists" % name)
+        self.db.execute(
+            "INSERT INTO roles(tenant_id, name, label, description, permissions, created_at) "
+            "VALUES(?, ?, ?, ?, ?, ?)",
+            (tid, name, label, description, json.dumps(permissions), utcnow()),
+        )
+        role = self._custom_role_dict(ctx, self._load_role(ctx, name))
+        self._log(ctx, "role.create", object_type="role", object_id=name,
+                  details={"label": label, "permissions": permissions})
+        return 201, role
+
+    def patch_role(self, ctx, name):
+        require_permission(ctx.principal, "roles.manage")
+        body = _require_obj(ctx.body)
+        if name in BUILTIN_ROLES:
+            raise ApiError(422, "built-in roles are read-only")
+        row = self._load_role(ctx, name)
+        for key in body:
+            if key in ("name", "builtin", "users"):
+                raise ApiError(422, "'%s' is read-only" % key)
+            if key not in ("label", "description", "permissions"):
+                raise ApiError(422, "unknown field '%s'" % key)
+        before = self._custom_role_dict(ctx, row)
+        label = (_text(body["label"], "label", max_len=100).strip() or name) if "label" in body else row["label"]
+        description = _text(body["description"], "description", max_len=500) if "description" in body \
+            else row["description"]
+        permissions = self._role_permissions(body["permissions"]) if "permissions" in body \
+            else before["permissions"]
+        self.db.execute("UPDATE roles SET label = ?, description = ?, permissions = ? WHERE id = ?",
+                        (label, description, json.dumps(permissions), row["id"]))
+        after = self._custom_role_dict(ctx, self._load_role(ctx, name))
+        changes = {k: {"old": before[k], "new": after[k]} for k in ("label", "description", "permissions")
+                   if before[k] != after[k]}
+        if changes:
+            self._log(ctx, "role.update", object_type="role", object_id=name,
+                      details={"changed": sorted(changes), "changes": changes})
+        return 200, after
+
+    def delete_role(self, ctx, name):
+        require_permission(ctx.principal, "roles.manage")
+        if name in BUILTIN_ROLES:
+            raise ApiError(422, "built-in roles are read-only")
+        row = self._load_role(ctx, name)
+        users = self._role_users(ctx, name)
+        if users:
+            raise ApiError(409, "role '%s' is still assigned to %d user(s)" % (name, users))
+        self.db.execute("DELETE FROM roles WHERE id = ?", (row["id"],))
+        self._log(ctx, "role.delete", object_type="role", object_id=name,
+                  details={"permissions": sorted(loads(row["permissions"], []))})
+        return 204, None
 
     # =====================================================================
     # webhooks
@@ -1302,12 +1632,12 @@ class Api:
         return row
 
     def list_webhooks(self, ctx):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "webhooks.manage")
         rows = self.db.query("SELECT * FROM webhooks WHERE tenant_id = ? ORDER BY id", (self._tid(ctx),))
         return 200, [self._webhook_dict(r) for r in rows]
 
     def create_webhook(self, ctx):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "webhooks.manage")
         body = _require_obj(ctx.body)
         unknown = set(body) - {"name", "type", "url", "secret", "events", "active", "soar_label", "verify_tls"}
         if unknown:
@@ -1341,7 +1671,7 @@ class Api:
         return 201, hook
 
     def delete_webhook(self, ctx, hook_id):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "webhooks.manage")
         hook = self._load_webhook(ctx, hook_id)
         self.db.execute("DELETE FROM webhooks WHERE id = ?", (hook["id"],))
         self._log(ctx, "webhook.delete", object_type="webhook", object_id=str(hook["id"]),
@@ -1349,7 +1679,7 @@ class Api:
         return 204, None
 
     def webhook_deliveries(self, ctx, hook_id):
-        self._require_admin(ctx)
+        require_permission(ctx.principal, "webhooks.manage")
         hook = self._load_webhook(ctx, hook_id)
         return 200, self.dispatcher.deliveries(hook["id"])
 

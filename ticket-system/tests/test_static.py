@@ -18,7 +18,7 @@ class StaticFilesTest(ServerTestCase):
     def setUpClass(cls):
         super().setUpClass()
         cls.files = {}
-        for path in ("/", "/static/app.js", "/static/app.css"):
+        for path in ("/", "/static/i18n.js", "/static/app.js", "/static/app.css"):
             resp = cls.admin.get(path)
             cls.files[path] = resp
 
@@ -26,7 +26,8 @@ class StaticFilesTest(ServerTestCase):
         return self.files[path].raw.decode("utf-8")
 
     def test_files_are_served_with_types(self):
-        expected = {"/": "text/html", "/static/app.js": "text/javascript", "/static/app.css": "text/css"}
+        expected = {"/": "text/html", "/static/i18n.js": "text/javascript", "/static/app.js": "text/javascript",
+                    "/static/app.css": "text/css"}
         for path, ctype in expected.items():
             resp = self.files[path]
             self.assertEqual(resp.status, 200, path)
@@ -47,6 +48,7 @@ class StaticFilesTest(ServerTestCase):
         self.assertNotRegex(html, r"\son[a-z]+=", "inline event handler")
         self.assertNotRegex(html, r"(src|href)=\"(https?:)?//", "external resource")
         self.assertIn('src="/static/app.js"', html)
+        self.assertIn('src="/static/i18n.js"', html)
         self.assertIn('href="/static/app.css"', html)
 
     def test_index_has_tenant_switch_and_new_navigation(self):
@@ -81,17 +83,20 @@ class StaticFilesTest(ServerTestCase):
 
     def test_journal_shows_author_via_actor(self):
         js = self.text("/static/app.js")
-        self.assertIn('e.author ? e.author + " (via " + e.actor + ")" : e.actor', js)
+        self.assertIn('e.author ? t("journal.via", { author: e.author, actor: e.actor }) : e.actor', js)
+        i18n = self.text("/static/i18n.js")
+        self.assertIn('"journal.via": "{author} (via {actor})"', i18n)
         # the comment form never sends an author: UI users are real users
         self.assertIn("{ body: text.value, type: kind })", js)
-        self.assertNotRegex(js, r"author:\s")
+        self.assertNotRegex(js, r'/comments", \{[^}]*author')
         css = self.text("/static/app.css")
         self.assertRegex(css, r"\.journal \.body \{[^}]*white-space: pre-wrap")
 
     def test_ticket_detail_has_accessible_journal_tabs(self):
         js = self.text("/static/app.js")
+        i18n = self.text("/static/i18n.js")
         for needle in ('role: "tablist"', 'role: "tab"', 'role: "tabpanel"', '"aria-selected"', '"aria-controls"',
-                       '"aria-labelledby"', '"aria-label": "Ticket activity"', '"ArrowRight"', '"ArrowLeft"',
+                       '"aria-labelledby"', '"aria-label": t("tabs.label")', '"ArrowRight"', '"ArrowLeft"',
                        "tab.tabIndex = on ? 0 : -1", "history.replaceState(", '"?tab=" + id',
                        "parseHash().params.tab"):
             self.assertIn(needle, js)
@@ -99,14 +104,25 @@ class StaticFilesTest(ServerTestCase):
         order = [js.index(s) for s in ('id: "worknotes"', 'id: "comments"', 'id: "resolution"', 'id: "audit"',
                                        'id: "history"')]
         self.assertEqual(order, sorted(order))
-        for title in ('"Work notes (" + notes.length + ")"', '"Comments (" + comments.length + ")"',
-                      '"Resolution report"', '"Audit trail (" + audits.length + ")"',
-                      '"History (" + journal.length + ")"'):
+        # titles with counters: the texts live in i18n.js, app.js passes the counts
+        for title in ('t("tabs.worknotes", { n: notes.length })', 't("tabs.comments", { n: comments.length })',
+                      't("tabs.resolution")', 't("tabs.audit", { n: audits.length })',
+                      't("tabs.history", { n: journal.length })'):
             self.assertIn(title, js)
-        self.assertRegex(js, r"if \(!isRequester\) \{\s*defs\.push\(\{ id: \"worknotes\"")
-        for text in ('"Add work note"', '"Add comment"', '"Not resolved yet."', '"Earlier summaries ("',
-                     'h("details"', 'ofType("summary")', '["Time", "Field", "Old → New", "Actor", "Source"]'):
+        for text in ('"tabs.label": "Ticket activity"', '"tabs.worknotes": "Work notes ({n})"',
+                     '"tabs.comments": "Comments ({n})"', '"tabs.resolution": "Resolution report"',
+                     '"tabs.audit": "Audit trail ({n})"', '"tabs.history": "History ({n})"'):
+            self.assertIn(text, i18n)
+        self.assertRegex(js, r"if \(!requester\) \{\s*defs\.push\(\{ id: \"worknotes\"")
+        self.assertIn("var requester = isRequester();", js)
+        for text in ('t("journal.add_work_note")', 't("journal.add_comment")', 't("report.not_resolved")',
+                     't("report.earlier", { n: earlier.length })', 'h("details"', 'ofType("summary")',
+                     '["col.time", "col.field", "col.old_new", "col.actor", "col.source"]'):
             self.assertIn(text, js)
+        for text in ('"Add work note"', '"Add comment"', '"Not resolved yet."', '"Earlier summaries ({n})"',
+                     '"col.time": "Time"', '"col.field": "Field"', '"col.old_new": "Old → New"',
+                     '"col.actor": "Actor"', '"col.source": "Source"'):
+            self.assertIn(text, i18n)
         css = self.text("/static/app.css")
         self.assertRegex(css, r"\.report \.body, \.pre-wrap \{[^}]*white-space: pre-wrap")
         self.assertIn("[role=tab][aria-selected=true]", css)
