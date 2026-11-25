@@ -36,7 +36,7 @@ GRANTABLE_PERMISSIONS = (
 # Administrative permissions: only built-in roles carry them.
 ADMIN_PERMISSIONS = (
     "users.manage", "roles.manage", "teams.manage", "fields.manage", "webhooks.manage",
-    "tenants.manage", "splunk.manage",
+    "tenants.manage", "splunk.manage", "pairing.manage",
 )
 PERMISSIONS = GRANTABLE_PERMISSIONS + ADMIN_PERMISSIONS
 

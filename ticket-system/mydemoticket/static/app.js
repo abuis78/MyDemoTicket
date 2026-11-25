@@ -26,7 +26,7 @@
   // Permissions of the built-in roles, used only when /me has no "permissions" list (older server).
   var ALL_PERMISSIONS = ["tickets.read_all", "tickets.create", "tickets.update_own", "tickets.update_all",
     "tickets.comment", "tickets.work_note", "tickets.close", "reports.view", "users.manage", "roles.manage",
-    "teams.manage", "fields.manage", "webhooks.manage", "tenants.manage", "splunk.manage"];
+    "teams.manage", "fields.manage", "webhooks.manage", "tenants.manage", "splunk.manage", "pairing.manage"];
   var FALLBACK_PERMISSIONS = {
     platform_admin: ALL_PERMISSIONS,
     admin: ALL_PERMISSIONS.filter(function (p) { return p !== "tenants.manage" && p !== "splunk.manage"; }),
@@ -475,7 +475,7 @@
   var ROUTE_PERMISSIONS = {
     "/admin/users": "users.manage", "/admin/roles": "roles.manage", "/admin/teams": "teams.manage",
     "/admin/custom-fields": "fields.manage", "/admin/webhooks": "webhooks.manage",
-    "/admin/tenants": "tenants.manage", "/reports": "reports.view"
+    "/admin/tenants": "tenants.manage", "/reports": "reports.view", "/admin/pairing": "pairing.manage"
   };
 
   function routeAllowed(path) {
@@ -498,6 +498,7 @@
     else if (r.path === "/admin/custom-fields") { nav = "custom-fields"; viewFields(); }
     else if (r.path === "/admin/webhooks") { nav = "webhooks"; viewWebhooks(); }
     else if (r.path === "/admin/audit") { nav = "audit"; viewAudit(); }
+    else if (r.path === "/admin/pairing") { nav = "pairing"; window.MDT_PAIRING.view(pageKit()); }
     else if (r.path === "/admin/tenants") { nav = "tenants"; viewTenants(); }
     else if (r.path === "/reports") { nav = "reports"; viewReports(r.params); }
     else if (r.path === "/profile") { nav = ""; viewProfile(); }
@@ -1185,6 +1186,12 @@
   }
 
   // ----------------------------------------------------------------- admin
+  // Helpers for pages that live in their own file (static/pairing.js: window.MDT_PAIRING.view(kit)).
+  function pageKit() {
+    return { h: h, t: t, api: api, render: render, clear: clear, toast: toast, fail: fail, field: field,
+      errorText: errorText, fmtTime: fmtTime, checkField: checkField, table: table };
+  }
+
   function adminPanel(title, formEl, tableEl, extra) {
     return h("div", null,
       h("div", { class: "panel" }, h("div", { class: "panel-head" }, h("h1", { text: title })), tableEl),

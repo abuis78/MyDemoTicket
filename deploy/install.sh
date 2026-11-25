@@ -124,6 +124,16 @@ do_install() {
   mkdir -p "$(p "$INSTALL_DIR")"
   rm -rf "$(p "$INSTALL_DIR")/mydemoticket"
   cp -R "$SRC_PKG" "$(p "$INSTALL_DIR")/mydemoticket"
+  # SOAR app + playbooks for the pairing wizard (found next to the package, see mydemoticket/pairing.py)
+  for part in soar-app/mydemoticket soar-playbooks; do
+    rm -rf "$(p "$INSTALL_DIR")/$part"
+    if [ -d "$REPO_DIR/$part" ]; then
+      mkdir -p "$(dirname "$(p "$INSTALL_DIR")/$part")"
+      cp -R "$REPO_DIR/$part" "$(p "$INSTALL_DIR")/$part"
+    else
+      say "note: $REPO_DIR/$part missing - the pairing wizard cannot install the SOAR app / playbooks"
+    fi
+  done
   find "$(p "$INSTALL_DIR")" -name '__pycache__' -type d -prune -exec rm -rf {} +
   chmod -R u=rwX,go=rX "$(p "$INSTALL_DIR")"
 
@@ -179,6 +189,7 @@ do_uninstall() {
   rm -f "$(p "$UNIT_PATH")" && say "removed $(p "$UNIT_PATH")"
   run systemctl daemon-reload
   rm -rf "$(p "$INSTALL_DIR")/mydemoticket" && say "removed $(p "$INSTALL_DIR")/mydemoticket"
+  rm -rf "$(p "$INSTALL_DIR")/soar-app" "$(p "$INSTALL_DIR")/soar-playbooks"
   rmdir "$(p "$INSTALL_DIR")" 2>/dev/null || true
   if is_managed "$(p "$ENV_FILE")"; then
     rm -f "$(p "$ENV_FILE")" && say "removed $(p "$ENV_FILE")"

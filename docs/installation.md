@@ -260,6 +260,8 @@ Further environment variables:
 | `MYDEMOTICKET_HEC_TOKEN` | every start | unset = HEC off | HEC token |
 | `MYDEMOTICKET_HEC_VERIFY_TLS` | every start | `1` | `0`, `false`, `no`, `off` disable certificate checks (lab only) |
 | `MYDEMOTICKET_HEC_INDEX` | every start | unset = token's default index | Target index, normally `mydemoticket` |
+| `MYDEMOTICKET_SOAR_BUNDLE_DIR` | every pairing run | next to the package, else the repository root | Directory that contains `soar-app/mydemoticket` and `soar-playbooks` (used by the [pairing wizard](#pairing-via-wizard)) |
+| `MYDEMOTICKET_PUBLIC_URL` | every pairing run | scheme + host of the request | Default ticket base URL the wizard writes into the SOAR asset, e.g. `https://ticket.example.com` |
 
 Fixed limits: request body max 1 MiB; webhook deliveries 3 attempts (1 s, 2 s
 backoff); audit log rotation at 10 MB, 5 generations.
@@ -368,6 +370,45 @@ apps, import playbooks, edit event settings – e.g. the built-in *Administrator
 *Allowed IPs* enter `any` or the egress IP of the ticket server. Open the user and copy the
 token (shown as JSON; use only the value of `ph-auth-token`). Do not click *Generate* later –
 that invalidates the token stored in the webhook.
+
+### Pairing via wizard
+
+Instead of sections 8, 9.1–9.4 and 10 you can let the ticket system do the work. You need only
+the SOAR URL and the `ph-auth-token` of the automation user from 9.0 (role with the rights for the
+REST imports, e.g. *Administrator*).
+
+1. Log in as tenant admin (or platform admin, switched to the tenant) and open
+   *Administration → ES + SOAR pairing* (`#/admin/pairing`).
+2. Enter the SOAR URL and the token. Check the names: container label (default `mydemoticket`),
+   MyDemoTicket asset (`mydemoticket`), Splunk asset (`splunk`), Enterprise Security asset
+   (`builtin_mc_connector`) and the ticket base URL SOAR should call (prefilled from
+   `MYDEMOTICKET_PUBLIC_URL` or the address in the browser).
+3. **Check connection** only reads: SOAR version, token, whether the Splunk and ES assets exist,
+   whether the app is installed and the label exists.
+4. **Set up** runs these steps and shows the result of each (`created`, `updated`, `exists`,
+   `skipped`, `failed`):
+
+   | Step | What happens | SOAR REST call |
+   |---|---|---|
+   | `user` | integration user `soar-<tenant>` (role `integration`, no password) | – |
+   | `webhook` | webhook of type `soar` for the SOAR URL; the token is its secret (updated if it changed) | – |
+   | `label` | container label | `GET`/`POST /rest/system_settings/events` |
+   | `app` | MyDemoTicket app from `soar-app/mydemoticket`, skipped if the same version is installed | `GET /rest/app?_filter_appid=…`, `POST /rest/app` |
+   | `asset` | asset of the app with `base_url`, a new integration token, `source_tag` `soar`, `ingest_label` | `GET /rest/asset?_filter_name=…`, `POST /rest/asset` or `POST /rest/asset/<id>` |
+   | `playbook_es_mirror`, `playbook_ticket_from_es` | both playbooks with the asset names and label substituted, imported and activated | `GET /rest/playbook?_filter_name=…`, `POST /rest/import_playbook`, `POST /rest/playbook/<id>` |
+
+Run it again at any time: unchanged parts report `exists` and nothing is created twice. A new
+integration token is created only when the asset has to be created or changed (other ticket base
+URL or label, or the pairing token was revoked); the old pairing token is revoked afterwards.
+When SOAR is not reachable or rejects the token, nothing is changed. The SOAR token is never shown,
+logged or written to the audit log (`pairing.check`, `pairing.apply` record only host names and
+step results). The playbook `mydemoticket_es_mirror` fails with a clear message when the Splunk or
+ES asset name does not exist in SOAR; fix the name and run again.
+
+The server needs `soar-app/mydemoticket` and `soar-playbooks`: `deploy/install.sh` copies them
+next to the package (the AWS bundle of `deploy/aws/deploy.sh` contains them); a source checkout
+finds them in the repository. Elsewhere set `MYDEMOTICKET_SOAR_BUNDLE_DIR`. API:
+[docs/api.md – ES + SOAR pairing](api.md#es--soar-pairing-admin-pairingmanage).
 
 ### 9.1 Build and install the app
 

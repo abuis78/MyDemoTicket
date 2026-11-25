@@ -81,6 +81,9 @@ ROUTES = [
     ("POST", r"/webhooks", "create_webhook", True),
     ("DELETE", r"/webhooks/(?P<hook_id>\d+)", "delete_webhook", True),
     ("GET", r"/webhooks/(?P<hook_id>\d+)/deliveries", "webhook_deliveries", True),
+    ("GET", r"/pairing", "pairing_status", True),
+    ("POST", r"/pairing/check", "pairing_check", True),
+    ("POST", r"/pairing/apply", "pairing_apply", True),
 ]
 COMPILED = [(m, re.compile("^/api/v1" + p + "/?$"), h, a) for m, p, h, a in ROUTES]
 

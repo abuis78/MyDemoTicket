@@ -29,6 +29,7 @@ from .auth import (
     verify_password,
 )
 from .db import dumps, loads, parse_iso, utcnow
+from .pairing import PairingMixin
 from .settings import apply_splunk, save_splunk, splunk_config
 
 try:  # Python 3.9+; without zoneinfo only the empty time zone (= browser) is valid
@@ -211,7 +212,7 @@ def _url_host(url):
     return urllib.parse.urlsplit(url).hostname or ""
 
 
-class Api:
+class Api(PairingMixin):
     def __init__(self, db, dispatcher, audit=None):
         self.db = db
         self.dispatcher = dispatcher

@@ -139,13 +139,14 @@ Since 1.1.0 every check is a permission check. `GET /me` returns the caller's
 | `webhooks.manage` | no | `/webhooks` |
 | `tenants.manage` | no | `/tenants` |
 | `splunk.manage` | no | `/settings/splunk` |
+| `pairing.manage` | no | `/pairing` (ES + SOAR pairing wizard) |
 
 Built-in role → permissions:
 
 | Role | Permissions |
 |---|---|
 | `platform_admin` | all |
-| `admin` | all except `tenants.manage`, `splunk.manage` |
+| `admin` | all except `tenants.manage`, `splunk.manage` (so including `pairing.manage`) |
 | `agent` | `tickets.read_all`, `tickets.create`, `tickets.update_own`, `tickets.comment`, `tickets.work_note`, `tickets.close`, `reports.view` |
 | `integration` | `tickets.read_all`, `tickets.create`, `tickets.update_all`, `tickets.comment`, `tickets.work_note`, `tickets.close`, `reports.view` |
 | `requester` | `tickets.create`, `tickets.comment` (self-service) |
@@ -592,6 +593,38 @@ curl -s -X POST -H "Authorization: Bearer $TOKEN" $MDT/settings/splunk/test
 
 The token is stored in the `settings` table of the database (data directory, mode
 0700), because it is needed to send events.
+
+## ES + SOAR pairing (admin: `pairing.manage`)
+
+Connects the tenant of the request to Splunk SOAR (see
+[installation.md – Pairing via wizard](installation.md#pairing-via-wizard)). The SOAR token
+(`soar_token`, a `ph-auth-token`) is sent with every check/apply, used only for the SOAR calls of
+that request and stored only as the secret of the `soar` webhook. No response, log line or audit
+event contains it or the integration token.
+
+| Endpoint | Body / result |
+|---|---|
+| `GET /pairing` | `{"tenant", "configured", "settings": {"soar_url", "verify_tls", "label", "splunk_asset", "es_asset", "app_asset", "ticket_base_url", "ticket_verify_tls", "soar_version", "app_version", "asset_id"}, "integration_user": {"username", "exists", "active", "token_active"}, "webhook": {"id", "active", "has_secret", "soar_label"} \| null, "playbooks", "last_check", "last_apply", "defaults", "steps", "bundle": {"available", "app_version", "playbooks"}}` |
+| `POST /pairing/check` | `{"soar_url", "soar_token", "verify_tls"?, "label"?, "splunk_asset"?, "es_asset"?, "app_asset"?}` → `200 {"ok", "soar_version", "checks": [{"check", "status", "detail"}]}`; checks `connection`, `splunk_asset`, `es_asset`, `app`, `label`; status `ok`, `info` or `failed`. Only GET requests to SOAR. Audit `pairing.check` |
+| `POST /pairing/apply` | `{"soar_url", "soar_token", "verify_tls"? (true), "label"? ("mydemoticket"), "splunk_asset"? ("splunk"), "es_asset"? ("builtin_mc_connector"), "app_asset"? ("mydemoticket"), "ticket_base_url"? (`MYDEMOTICKET_PUBLIC_URL` or the request host), "ticket_verify_tls"? (true), "steps"? (all)}` → `200 {"ok", "soar_version", "connection": {"status", "detail"}, "steps": [{"step", "status", "detail"}]}`. Audit `pairing.apply` |
+
+Missing optional fields fall back to the values of the last run, then to the defaults. Steps
+(in this order): `user`, `webhook`, `label`, `app`, `asset`, `playbook_es_mirror`,
+`playbook_ticket_from_es`; `steps` may name a subset (`"playbooks"` = both playbook steps). Step
+status: `created`, `updated`, `exists`, `skipped` (not selected, or no SOAR connection) or
+`failed` (with the reason in `detail`); `ok` is false if the connection or any step failed.
+Validation errors (unknown field, bad URL, names outside `[A-Za-z0-9_.-]{1,100}`, unknown step)
+→ `422`; without `pairing.manage` → `403`; a second run while one is in progress → waits, then
+`409`.
+
+```bash
+curl -s -X POST -H "Authorization: Bearer $TOKEN" -H "X-MyDemoTicket-Tenant: acme" \
+  -H "Content-Type: application/json" \
+  -d '{"soar_url": "https://soar.example.com", "soar_token": "'"$SOAR_PH_AUTH_TOKEN"'",
+       "ticket_base_url": "https://ticket.example.com"}' "$MDT/pairing/apply"
+# {"ok": true, "soar_version": "8.8.0.123", "connection": {"status": "ok", ...},
+#  "steps": [{"step": "user", "status": "created", "detail": "integration user soar-acme ..."}, ...]}
+```
 
 ## Teams (admin)
 
