@@ -1,5 +1,5 @@
 Versuch: 1/5
-Punkte: 0/9
+Punkte: 7/9
 
 # Loop-Protokoll: Benutzerverwaltung, Profil, DE/EN, Rollenverwaltung, Splunk-Verbindung (MyDemoTicket)
 
@@ -35,15 +35,15 @@ Ausgelegte Spec (verbindlich für die Agenten):
 ## Checkliste
 | # | Punkt | Nachweis | Stand |
 |---|---|---|---|
-| 1 | Set password fragt zweimal, Display name änderbar | Code + Test | offen |
-| 2 | Profil mit Display name, E-Mail, Passwort, Zeitzone, Theme, Sprache | API-Tests + UI-Code | offen |
-| 3 | Eigene Passwortänderung beendet die eigene Sitzung nicht, User anlegen klappt danach | Test | offen |
-| 4 | UI komplett DE/EN | Test: jeder Schlüssel in beiden Sprachen, keine fest verdrahteten englischen UI-Texte in app.js | offen |
-| 5 | Rollenverwaltung inkl. Analysten-Rollen, nur Analysten-Rechte vergebbar, serverseitig erzwungen | Tests | offen |
-| 6 | Splunk-Verbindung in Audit / Splunk anlegbar und testbar, Token nie ausgegeben | Tests | offen |
-| 7 | Alle Tests grün (ticket-system, soar-app, mcp-server, e2e, deploy) | Erfolgszeilen im Volloutput | offen |
-| 8 | Live auf https://ticket.soc-games.com deployt und geprüft | Health-Version + Live-Prüfungen im Protokoll | offen |
-| 9 | Kein Secret im Diff; Protokoll vollständig; jedes externe Werkzeug vermerkt | Protokoll + Diff | offen |
+| 1 | Set password fragt zweimal, Display name änderbar | Code + Test | BESTANDEN (Versuch 1) |
+| 2 | Profil mit Display name, E-Mail, Passwort, Zeitzone, Theme, Sprache | API-Tests + UI-Code | BESTANDEN (Versuch 1) |
+| 3 | Eigene Passwortänderung beendet die eigene Sitzung nicht, User anlegen klappt danach | Test | BESTANDEN (Versuch 1) |
+| 4 | UI komplett DE/EN | Test: jeder Schlüssel in beiden Sprachen, keine fest verdrahteten englischen UI-Texte in app.js | BESTANDEN (Versuch 1) |
+| 5 | Rollenverwaltung inkl. Analysten-Rollen, nur Analysten-Rechte vergebbar, serverseitig erzwungen | Tests | BESTANDEN (Versuch 1) |
+| 6 | Splunk-Verbindung in Audit / Splunk anlegbar und testbar, Token nie ausgegeben | Tests | BESTANDEN (Versuch 1) |
+| 7 | Alle Tests grün (ticket-system, soar-app, mcp-server, e2e, deploy) | Erfolgszeilen im Volloutput | BESTANDEN (Versuch 1) |
+| 8 | Live auf https://ticket.soc-games.com deployt und geprüft | Health-Version + Live-Prüfungen im Protokoll | ausstehend (Deploy) |
+| 9 | Kein Secret im Diff; Protokoll vollständig; jedes externe Werkzeug vermerkt | Protokoll + Diff | offen (Protokoll wird nach Deploy vervollständigt; kein Secret im Diff) |
 
 ## Antworten auf Vorab-Fragen
 - Keine Vorab-Fragen.
@@ -54,7 +54,9 @@ Ausgelegte Spec (verbindlich für die Agenten):
 - Versuch 1 · Protokoll-Agent: model haiku, effort low – mechanisch.
 - Versuch 1 · Agent A (Backend): effort medium – Bauen nach Spec/Vertrag.
 - Versuch 1 · Agent B (UI): effort medium – Bauen nach Spec/Vertrag.
-- Inspektor: später model sonnet, effort medium.
+- Agent C Integration (UI gegen echten Server): effort medium.
+- Inspektor Versuch 1: model sonnet, effort medium.
+- Protokoll-Nachtrag (dieser Eintrag): model haiku, effort medium. Hochgestuft von low, weil der Inspektor im vorherigen Loop den Protokollpunkt bei low nicht bestanden hat. Regel aus Loop 2026-11-24 übernommen: eine Stufe hoch, nie herunter.
 
 ## Annahmen
 1. Default-Sprache für bestehende und neue User ist „de“, weil Andreas Deutsch nutzt. Die Login-Seite nimmt localStorage bzw. die Browsersprache.
@@ -63,6 +65,9 @@ Ausgelegte Spec (verbindlich für die Agenten):
 4. Splunk-Verbindung = HEC-Verbindung des Audit-Loggings, nur für platform_admin. Der Token liegt wie der SOAR-Webhook-Secret im Klartext in SQLite und wird nie zurückgegeben.
 5. Schema-Migration v4 ist additiv mit Backup (*.pre-v4.bak). Sie gilt nicht als verbotene Datenmigration.
 6. Der API-Vertrag zwischen Backend und UI wird vom Orchestrator festgelegt (Datei im Scratchpad, Inhalt sinngemäß in der Spec).
+7. `/me` liefert zusätzlich `role_label` (nicht im Vertrag v4). Damit sehen Benutzer mit eigener Rolle ihren Rollennamen.
+8. Server-Fehlermeldungen (422-Texte) bleiben englisch, wie der Server sie liefert. UI-eigene Texte sind übersetzt.
+9. Der PR wird gesquasht. Dabei verschwindet der Merge-Commit des UI-Worktrees.
 
 ## Diagnose
 Nachtrag „User anlegen klappt nicht“:
@@ -75,10 +80,32 @@ Nachtrag „User anlegen klappt nicht“:
 |---|---|---|---|---|
 | ~06:55 | Orchestrator | mcp__splunk-socgames__splunk_run_query (3 Abfragen) | splunk.soc-games.com, Index mydemoticket | Fehler beim User-Anlegen finden – lesend |
 | ~06:55 | Orchestrator | Bash curl POST https://ticket.soc-games.com/api/v1/auth/login als admin | ticket.soc-games.com | Prüfen, ob das gespeicherte Admin-Passwort gilt (HTTP 200). Passwort aus Keychain, nicht ausgegeben |
+| ~08:10 | Agent | Bash git push origin feature/user-profile-i18n-roles | GitHub (origin) | Feature-Branch veröffentlichen |
+| nach Push | Agent | Bash gh pr create → https://github.com/abuis78/MyDemoTicket/pull/18 | GitHub | PR für das Feature anlegen |
+| – | Agent | Bash aws sts get-caller-identity --profile janus-env2 | AWS (Account soc-games) | Anmeldung für den Deploy prüfen. Ergebnis: SSO abgelaufen |
+| – | Inspektor | Bash curl https://ticket.soc-games.com/api/v1/health | ticket.soc-games.com | Live-Health prüfen (lesend) |
 
 ## Versuch 1
-- Agent A (Backend) und Agent B (UI) gestartet. Ergebnis offen.
-- Urteil des Inspektors: noch nicht erstellt.
+- Agent A (Backend), Commits: 2cf2823, c4ab9e4, 8fcd2f7, 13eec9d, e137744, b650759.
+- Agent B (UI, Worktree-Branch, gemergt in 2256481), Commits: 10169e7, 7ddde55, 055945d, 92b6137, ece0dc9, e2d98fe, b5a1498.
+- Agent C (Integration) hat 4 Abweichungen zwischen UI und Backend behoben:
+  - afa06db: Integrations-Fallback-Rechte enthalten reports.view wie der Server.
+  - 8921d73: `/me` liefert role_label, damit Benutzer mit eigener Rolle ihren Rollennamen sehen.
+  - 9396f91: Admin-Seiten, die per URL geöffnet werden, prüfen die Berechtigung ihres Nav-Links.
+  - cd2f536: Self-Service-Abbruch und -Kommentar folgen den Berechtigungsprüfungen des Servers.
+  - Doku: 39530bd.
+- Smoke gegen den lokalen Server: 88 Prüfungen, „SMOKE-REAL OK".
+- Urteil des Inspektors (Versuch 1):
+
+| # | Ergebnis | Nachweis |
+|---|---|---|
+| 1–7 | BESTANDEN | ticket-system „Ran 210 tests … OK"; mcp-server „Ran 36 tests OK"; soar-app „Ran 71 tests OK"; e2e „E2E: all 3 run(s) OK"; deploy „ALL PASSED" |
+| 8 | NICHT BESTANDEN | Live-Health noch `{"status": "ok", "version": "1.0.0"}` |
+| 9 | NICHT BESTANDEN | Protokoll unvollständig. Kein Secret im Diff (Treffer nur Dummy-Fixtures). |
+
+- Hinweise des Inspektors (nicht blockierend):
+  - Server-Validierungstexte erscheinen in der UI englisch.
+  - Platzhalter „Search tickets" steht als Markup-Fallback in `index.html:12` und wird zur Laufzeit übersetzt.
 
 ## Braucht Andreas
 1. Das Admin-Passwort wurde um 06:46 in der UI geändert. Der Keychain-Eintrag mydemoticket/admin-password ist vermutlich veraltet. Empfehlung: Eintrag mit dem neuen Passwort aktualisieren.
