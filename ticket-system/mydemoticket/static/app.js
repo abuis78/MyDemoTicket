@@ -33,7 +33,7 @@
     agent: ["tickets.read_all", "tickets.create", "tickets.update_own", "tickets.comment", "tickets.work_note",
       "tickets.close", "reports.view"],
     integration: ["tickets.read_all", "tickets.create", "tickets.update_all", "tickets.comment",
-      "tickets.work_note", "tickets.close"],
+      "tickets.work_note", "tickets.close", "reports.view"],
     requester: ["tickets.create", "tickets.comment"],
     analyst_l1: ["tickets.read_all", "tickets.create", "tickets.update_own", "tickets.comment", "tickets.work_note"],
     analyst_l2: ["tickets.read_all", "tickets.create", "tickets.update_all", "tickets.comment", "tickets.work_note",
